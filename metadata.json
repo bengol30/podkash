@@ -1,0 +1,7 @@
+{
+  "name": "Copy of PodCash - Podcast Management System",
+  "description": "A comprehensive RTL-supported podcast management system featuring episode tracking, guest management, studio bookings, and task management with AI-powered assistance.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
