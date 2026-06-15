@@ -26,6 +26,12 @@ const EpisodeDetail: React.FC<EpisodeDetailProps> = ({ episodeId, episodes, gues
 
   if (!episode) return null;
 
+  const handleQuickStatusChange = (newStatus: string) => {
+    setEpisodes(prev => prev.map(e => e.id === episode.id ? { ...e, status: newStatus as any, updatedAt: new Date().toISOString() } : e));
+    setEditedStatus(newStatus as any);
+    addToast(`סטטוס שונה ל: ${STATUS_LABELS[newStatus]}`, 'success');
+  };
+
   const episodeGuests = guests.filter(g => g.relatedEpisodeId === episode.id);
   const episodeTasks = tasks.filter(t => t.relatedId === episode.id);
 
@@ -78,6 +84,26 @@ const EpisodeDetail: React.FC<EpisodeDetailProps> = ({ episodeId, episodes, gues
               שמור שינויים
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Status Selector */}
+      <div className="bg-white p-6 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100">
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">שינוי סטטוס — לחץ על כל סטטוס לשינוי מיידי</p>
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(STATUS_LABELS).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => handleQuickStatusChange(val)}
+              className={`px-4 py-2 rounded-full text-xs font-black transition-all duration-200 ${
+                episode.status === val
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-200 scale-105'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:scale-105'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 

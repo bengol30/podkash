@@ -16,6 +16,14 @@ const EpisodeList: React.FC<EpisodeListProps> = ({ episodes, setEpisodes, onEpis
   const [filter, setFilter] = useState('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+
+  const handleStatusChange = (episodeId: string, newStatus: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEpisodes(prev => prev.map(ep => ep.id === episodeId ? { ...ep, status: newStatus as any, updatedAt: new Date().toISOString() } : ep));
+    setOpenDropdownId(null);
+    addToast(`סטטוס עודכן ל: ${STATUS_LABELS[newStatus]}`, 'success');
+  };
 
   const filteredEpisodes = useMemo(() => {
     return episodes.filter(ep => {
@@ -48,6 +56,9 @@ const EpisodeList: React.FC<EpisodeListProps> = ({ episodes, setEpisodes, onEpis
 
   return (
     <div className="space-y-6">
+      {openDropdownId && (
+        <div className="fixed inset-0 z-[5]" onClick={() => setOpenDropdownId(null)} />
+      )}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-4 flex-1">
           <input 
@@ -84,7 +95,28 @@ const EpisodeList: React.FC<EpisodeListProps> = ({ episodes, setEpisodes, onEpis
             className="group bg-white p-8 rounded-3xl border border-slate-100 shadow-lg shadow-slate-200/50 hover:shadow-2xl hover:shadow-blue-200/30 transition-all cursor-pointer flex flex-col h-full"
           >
              <div className="flex justify-between items-center mb-6">
-                <span className="px-4 py-1.5 bg-blue-50 text-blue-700 rounded-full text-xs font-black shadow-sm border border-blue-100">{STATUS_LABELS[ep.status]}</span>
+                <div className="relative z-10" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setOpenDropdownId(openDropdownId === ep.id ? null : ep.id); }}
+                    className="px-4 py-1.5 bg-blue-50 text-blue-700 rounded-full text-xs font-black shadow-sm border border-blue-100 hover:bg-blue-100 transition-colors flex items-center gap-1.5"
+                  >
+                    {STATUS_LABELS[ep.status]}
+                    <span className="opacity-50 text-[8px]">▼</span>
+                  </button>
+                  {openDropdownId === ep.id && (
+                    <div className="absolute top-full mt-1 right-0 z-20 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden min-w-[170px] py-1">
+                      {Object.entries(STATUS_LABELS).map(([val, label]) => (
+                        <button
+                          key={val}
+                          onClick={(e) => handleStatusChange(ep.id, val, e)}
+                          className={`w-full text-right px-4 py-2.5 text-xs font-bold hover:bg-blue-50 transition-colors ${ep.status === val ? 'bg-blue-50 text-blue-700' : 'text-slate-700'}`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <span className="text-[10px] uppercase font-black tracking-widest text-slate-400">{ep.type}</span>
              </div>
              <h3 className="text-xl font-black text-slate-800 mb-4 leading-snug group-hover:text-blue-700 transition-colors">{ep.title}</h3>
