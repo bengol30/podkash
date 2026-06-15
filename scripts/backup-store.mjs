@@ -3,9 +3,18 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const ref = process.env.SUPABASE_PROJECT_REF || 'sqsxmvbqabftbmuyutlu';
-const token = process.env.SUPABASE_ACCESS_TOKEN || readFileSync(`${homedir()}/.supabase/access-token`, 'utf8').trim();
+const directSupabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
+const directServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 async function management(path) {
+  let token = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!token) {
+    try {
+      token = readFileSync(`${homedir()}/.supabase/access-token`, 'utf8').trim();
+    } catch {
+      throw new Error('Missing Supabase credentials. Set SUPABASE_SERVICE_ROLE_KEY + SUPABASE_URL, or SUPABASE_ACCESS_TOKEN.');
+    }
+  }
   const res = await fetch(`https://api.supabase.com${path}`, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -13,8 +22,20 @@ async function management(path) {
   return res.json();
 }
 
+async function getServiceRoleKey() {
+  if (directServiceRoleKey) return directServiceRoleKey;
+  const keys = await management(`/v1/projects/${ref}/api-keys`);
+  const serviceRoleKey = keys.find((key) => key.name === 'service_role')?.api_key;
+  if (!serviceRoleKey) throw new Error('Could not find Supabase service_role key');
+  return serviceRoleKey;
+}
+
+function getSupabaseUrl() {
+  return directSupabaseUrl || `https://${ref}.supabase.co`;
+}
+
 async function rest(serviceRoleKey, table) {
-  const res = await fetch(`https://${ref}.supabase.co/rest/v1/${table}?select=*`, {
+  const res = await fetch(`${getSupabaseUrl()}/rest/v1/${table}?select=*`, {
     headers: {
       apikey: serviceRoleKey,
       authorization: `Bearer ${serviceRoleKey}`,
@@ -24,9 +45,7 @@ async function rest(serviceRoleKey, table) {
   return res.json();
 }
 
-const keys = await management(`/v1/projects/${ref}/api-keys`);
-const serviceRoleKey = keys.find((key) => key.name === 'service_role')?.api_key;
-if (!serviceRoleKey) throw new Error('Could not find Supabase service_role key');
+const serviceRoleKey = await getServiceRoleKey();
 
 const snapshot = {
   createdAt: new Date().toISOString(),
