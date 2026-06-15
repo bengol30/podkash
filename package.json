@@ -1,0 +1,22 @@
+{
+  "name": "podkash",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "backup": "node scripts/backup-store.mjs"
+  },
+  "dependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "next": "latest",
+    "postgres": "^3.4.9",
+    "react": "latest",
+    "react-dom": "latest",
+    "typescript": "latest"
+  }
+}
