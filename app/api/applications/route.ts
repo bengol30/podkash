@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { readStore, writeStore } from '@/lib/db';
-import { type Application, type ApplicationType } from '@/lib/store-types';
+import { type Application, type ApplicationType, type Person } from '@/lib/store-types';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +39,24 @@ export async function POST(request: Request) {
       data: cleanData,
     };
 
-    await writeStore({ ...store, applications: [application, ...(store.applications || [])] });
+    // Auto-add the registrant to the People contact list (deduped by phone/name).
+    const note = [cleanData.mainTopic || cleanData.episodeTopic || cleanData.about || cleanData.whyHost, application.city && `עיר: ${application.city}`, 'נרשם/ה דרך הטופס'].filter(Boolean).join(' · ');
+    const person: Person = {
+      name,
+      role: type === 'host' ? 'מנחה (הרשמה)' : 'מרואיין (הרשמה)',
+      type,
+      phone,
+      episodes: 0,
+      note,
+      email,
+      city: application.city,
+      source: 'registration',
+    };
+    const people = store.people || [];
+    const personExists = people.some(p => (phone && p.phone === phone) || (!phone && p.name === name));
+    const nextPeople = personExists ? people : [person, ...people];
+
+    await writeStore({ ...store, applications: [application, ...(store.applications || [])], people: nextPeople });
     return NextResponse.json({ ok: true, id: application.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';

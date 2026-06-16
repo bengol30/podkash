@@ -27,7 +27,7 @@ export type Episode = typeof episodes[number] & {
     fullAudio?: DriveFolderStatus;
   };
 };
-export type Person = typeof people[number];
+export type Person = typeof people[number] & { email?: string; city?: string; source?: string };
 export type Task = typeof tasks[number];
 export type Message = typeof messages[number];
 export type Platform = typeof platforms[number];
@@ -44,6 +44,8 @@ export type Application = {
   age?: string;
   displayName?: string;
   links?: string;
+  episodeId?: number | null;
+  noEpisode?: boolean;
   data: Record<string, string>;
 };
 

@@ -1,9 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { Dispatch, FormEvent, SetStateAction, useEffect, useRef, useState } from 'react';
 import { type EpisodeStatus } from '@/lib/data';
-import { seedStore as seed, type Application, type Episode, type Session, type Store } from '@/lib/store-types';
+import { seedStore as seed, type Application, type Episode, type Person, type Session, type Store } from '@/lib/store-types';
 import { cleanDateTime, formatDateTimeInput, formatDateTimeRange } from '@/lib/time';
 
 const LEGACY_KEY = 'podkash:v1';
@@ -25,6 +25,51 @@ function applicationEntries(application: Application) {
   const data = application.data || {};
   const keys = Array.from(new Set([...applicationFieldOrder, ...Object.keys(data)])).filter(key => String(data[key] || '').trim());
   return keys.map(key => [applicationFieldLabels[key] || key, String(data[key])]);
+}
+
+function applicationTopic(a: Application) {
+  return a.data?.mainTopic || a.data?.episodeTopic || a.data?.whyHost || a.data?.about || 'נרשם/ה דרך הטופס';
+}
+
+function applicationToPerson(a: Application): Person {
+  const note = [a.data?.mainTopic || a.data?.episodeTopic || a.data?.about || a.data?.whyHost, a.city && `עיר: ${a.city}`, 'נרשם/ה דרך הטופס'].filter(Boolean).join(' · ');
+  return { name: a.name, role: a.type === 'host' ? 'מנחה (הרשמה)' : 'מרואיין (הרשמה)', type: a.type, phone: a.phone || '', episodes: 0, note, email: a.email, city: a.city, source: 'registration' };
+}
+
+function ensurePerson(people: Person[], a: Application): Person[] {
+  const exists = people.some(p => (a.phone && p.phone === a.phone) || (!a.phone && p.name === a.name));
+  return exists ? people : [applicationToPerson(a), ...people];
+}
+
+function AssignControl({ a, store, setStore }: { a: Application; store: Store; setStore: Dispatch<SetStateAction<Store>> }) {
+  function assignEpisode(episodeId: number) {
+    setStore(s => ({ ...s, people: ensurePerson(s.people, a), applications: s.applications.map(x => x.id === a.id ? { ...x, episodeId, noEpisode: false } : x) }));
+  }
+  function markNoEpisode() {
+    setStore(s => ({ ...s, people: ensurePerson(s.people, a), applications: s.applications.map(x => x.id === a.id ? { ...x, noEpisode: true, episodeId: null } : x) }));
+  }
+  return <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+    <select defaultValue="" onChange={e => { if (e.target.value) assignEpisode(Number(e.target.value)); }} style={{ padding: '8px 10px', borderRadius: 10 }}>
+      <option value="" disabled>שייך לפרק…</option>
+      {store.episodes.map(ep => <option key={ep.id} value={ep.id}>#{ep.number} {ep.title}</option>)}
+    </select>
+    <button className="miniBtn" type="button" onClick={markNoEpisode}>אין פרק עדיין</button>
+  </div>;
+}
+
+function AssignApplicationsPrompt({ store, setStore }: { store: Store; setStore: Dispatch<SetStateAction<Store>> }) {
+  const [dismissed, setDismissed] = useState(false);
+  const unassigned = (store.applications || []).filter(a => !a.episodeId && !a.noEpisode);
+  if (dismissed || !unassigned.length) return null;
+  return <Modal title="שיוך הרשמות לפרקים" subtitle={`${unassigned.length} הרשמות עדיין לא שויכו לפרק. שייך כל אחת לפרק, או סמן שעדיין לא נפתח לה פרק.`} onClose={() => setDismissed(true)}>
+    <div className="list">
+      {unassigned.map(a => <div className="row applicationRow" key={a.id} style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 160 }}><h3 style={{ margin: 0 }}>{a.name}</h3><p className="muted" style={{ margin: '4px 0 0' }}>{applicationTypeLabel(a.type)} · {a.phone}</p></div>
+        <AssignControl a={a} store={store} setStore={setStore} />
+      </div>)}
+    </div>
+    <div className="formActions"><button className="btn light" type="button" onClick={() => setDismissed(true)}>דלג לעכשיו</button></div>
+  </Modal>;
 }
 
 function normalizeStore(input: Partial<Store> | null | undefined): Store {
@@ -129,11 +174,12 @@ function FormRow({ label, name, children, required=false }: { label:string; name
 function TextArea({ label, name, required=false }: { label:string; name:string; required?:boolean }) { return <label className="formRow wide"><span>{label}{required && ' *'}</span><textarea name={name} rows={4} required={required}/></label>; }
 
 export function DashboardClient() {
-  const [store] = useStore();
+  const [store, setStore] = useStore();
   const urgent = store.episodes.filter(e => e.urgent);
   const open = store.tasks.filter(t => t.status !== 'בוצע');
   const today = open.filter(t => t.due === 'היום');
   return <>
+    <AssignApplicationsPrompt store={store} setStore={setStore} />
     <Head eyebrow="סקירה יומית" title="מה צריך לקרות עכשיו?" subtitle="דשבורד קצר שמראה צילומים קרובים, פרקים תקועים, משימות דחופות והפצה שמחכה לטיפול.">
       <Link className="btn dark" href="/episodes">+ פרק חדש</Link><Link className="btn light" href="/messages">הודעה מהירה</Link>
     </Head>
@@ -155,6 +201,7 @@ export function EpisodesClient() {
   const filtered = store.episodes.filter(e => [e.title,e.topic,e.host,e.guests,e.status].join(' ').includes(q));
   const boardStatuses = [...statusFlow, ...filtered.map(e=>e.status).filter(st=>!statusFlow.includes(st))].filter((st,i,arr)=>arr.indexOf(st)===i);
   const applications = store.applications || [];
+  const unassignedApplications = applications.filter(a => !a.episodeId && !a.noEpisode);
   const taskCount = (episode: Episode) => store.tasks.filter(t => t.episode === episode.title).length;
   function addEpisode(ev: FormEvent<HTMLFormElement>) {
     ev.preventDefault(); const form = ev.currentTarget;
@@ -188,7 +235,8 @@ export function EpisodesClient() {
   return <>
     <Head eyebrow="פרקים" title="כל פרק כמרכז עבודה" subtitle="יצירת פרק כוללת את המידע שבאמת צריך לתפעול: נושא, מנחה, מרואיינים, צילום, פרסום וסטטוס."><Btn onClick={()=>setOpen(true)}>+ פרק</Btn><Btn tone="gold" onClick={copyExternalFormLink}>{copied ? 'הקישור הועתק' : 'העתקת קישור הרשמה'}</Btn><Link className="btn light" href={externalFormPath} target="_blank">פתיחת הטופס</Link><input className="search" placeholder="חיפוש פרק" value={q} onChange={e=>setQ(e.target.value)} /></Head>
     <section className="metrics episodesMetrics"><Metric n={store.episodes.length} label="פרקים"/><Metric n={store.episodes.filter(e=>e.status==='צילום נקבע').length} label="צילום נקבע"/><Metric n={store.episodes.filter(e=>e.status==='בעריכה').length} label="בעריכה"/><Metric n={store.episodes.filter(e=>e.status==='מוכן לפרסום').length} label="לפרסום"/></section>
-    <section className="panel" style={{marginBottom:16}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><h2>הרשמות חיצוניות</h2><p className="muted">נרשמים מהטופס החיצוני, כדי שאפשר יהיה בהמשך לעשות התאמות בין מנחים למרואיינים. לחיצה על הרשמה פותחת את כל הפרטים.</p></div><span className="pill green">{applications.length} פניות</span></div><div className="list">{applications.length ? applications.map(a=><button className="row click applicationRow" key={a.id} onClick={()=>setSelectedApplication(a)}><div><h3>{a.name}</h3><p>{applicationTypeLabel(a.type)} · {a.phone} · {a.email}<br/>{a.data?.mainTopic || a.data?.episodeTopic || a.data?.whyHost || a.data?.about || 'נרשם/ה דרך הטופס'}</p></div><span className="pill">{cleanDateTime(a.createdAt)}</span></button>) : <p className="muted">עדיין אין הרשמות. אפשר להעתיק את הקישור מהכפתור למעלה ולשלוח החוצה.</p>}</div></section>
+    <AssignApplicationsPrompt store={store} setStore={setStore} />
+    <details className="disclosurePanel" style={{marginBottom:16}}><summary><span className={`pill ${unassignedApplications.length ? 'red' : 'green'}`}>{unassignedApplications.length}</span><div><h2>הרשמות חיצוניות חדשות</h2><p className="muted">הרשמות מהטופס שעדיין לא שויכו לפרק. פתח כדי לשייך כל אחת לפרק. לחיצה על השם פותחת את כל הפרטים.</p></div></summary><div className="disclosureBody"><div className="list">{unassignedApplications.length ? unassignedApplications.map(a=><div className="row applicationRow" key={a.id} style={{alignItems:'center',gap:10,flexWrap:'wrap'}}><button className="click" style={{flex:1,minWidth:160,textAlign:'inherit',background:'none',border:'none',cursor:'pointer',padding:0}} onClick={()=>setSelectedApplication(a)}><div><h3 style={{margin:0}}>{a.name}</h3><p className="muted" style={{margin:'4px 0 0'}}>{applicationTypeLabel(a.type)} · {a.phone} · {a.email}<br/>{applicationTopic(a)}</p></div></button><AssignControl a={a} store={store} setStore={setStore} /></div>) : <p className="muted">אין הרשמות חדשות שממתינות לשיוך 🎉</p>}</div></div></details>
     <section className="episodesMobileList">{filtered.map(e=><article className="mobileEpisodeCard" key={e.id}><Link href={`/episodes/${e.id}`} className="cardLink"><div className="mobileEpisodeTop"><span className="pill blue">#{e.number}</span>{e.urgent&&<span className="pill red">דחוף</span>}<span className="pill">{e.status}</span></div><h2>{e.title}</h2><p>{e.topic}</p><div className="mobileEpisodeFacts"><div><small>מנחה</small><b>{e.host}</b></div><div><small>מרואיינים</small><b>{e.guests}</b></div><div><small>צילום</small><b>{cleanDateTime(e.recording)}</b></div><div><small>פרסום</small><b>{cleanDateTime(e.publish)}</b></div></div><div className="progress"><span style={{width:e.progress+'%'}}/></div></Link><div className="mobileEpisodeActions"><button onClick={()=>advance(e.id)}>קדם סטטוס</button><Link href={`/episodes/${e.id}`}>פתח</Link><Link href={`/episodes/${e.id}`}>{taskCount(e)} משימות</Link><button className="deleteTiny" onClick={()=>deleteEpisode(e.id)} aria-label={`מחיקת ${e.title}`}>מחיקה</button></div></article>)}</section>
     <section className="board episodesBoardDesktop">{boardStatuses.map(st=><div className="lane" key={st}><div className="laneTitle"><span>{st}</span><span className="pill">{filtered.filter(e=>e.status===st).length}</span></div>{filtered.filter(e=>e.status===st).map(e=><article className="episodeCard" key={e.id}><Link href={`/episodes/${e.id}`} className="cardLink"><h3>#{e.number} · {e.title}</h3><p className="muted">{e.topic}<br/>{e.host} · {e.guests}<br/>צילום: {cleanDateTime(e.recording)}</p><div className="progress"><span style={{width:e.progress+'%'}}/></div></Link><div style={{display:'flex',gap:7,marginTop:10,flexWrap:'wrap'}}><button className="miniBtn" onClick={()=>advance(e.id)}>קדם</button><Link className="pill" href={`/episodes/${e.id}`}>פתח · {taskCount(e)} משימות</Link><button className="deleteTiny" onClick={()=>deleteEpisode(e.id)} aria-label={`מחיקת ${e.title}`}>מחק</button></div></article>)}</div>)}</section>
     {selectedApplication && <Modal title={selectedApplication.name} subtitle={`${applicationTypeLabel(selectedApplication.type)} · נרשם/ה דרך הטופס החיצוני · ${cleanDateTime(selectedApplication.createdAt)}`} onClose={()=>setSelectedApplication(null)}><section className="applicationDetails"><div className="applicationSummary"><span className="pill green">{applicationTypeLabel(selectedApplication.type)}</span><a className="pill" href={`tel:${selectedApplication.phone}`}>{selectedApplication.phone}</a><a className="pill" href={`mailto:${selectedApplication.email}`}>{selectedApplication.email}</a></div><div className="applicationDetailGrid">{applicationEntries(selectedApplication).map(([label, value])=><div className="applicationDetailItem" key={label}><small>{label}</small><p>{value}</p></div>)}</div></section></Modal>}
@@ -575,5 +623,5 @@ export function PeopleClient(){
  const [store,setStore]=useStore(); const [open,setOpen]=useState(false);
  function add(ev:FormEvent<HTMLFormElement>){ev.preventDefault(); const f=ev.currentTarget; setStore(s=>({...s,people:[{name:field(f,'name'),role:field(f,'role')||'מרואיין',type:field(f,'type')||'guest',phone:field(f,'phone'),episodes:0,note:field(f,'note')},...s.people]})); setOpen(false);}
  function deletePerson(name:string){ if(!window.confirm(`למחוק את איש הקשר “${name}”?`)) return; setStore(s=>({...s, people:s.people.filter(p=>p.name!==name)})); }
- return <><Head eyebrow="אנשים" title="מנחים, מרואיינים וצוות" subtitle="איש קשר כולל תפקיד, טלפון והערות הפקה — כדי שאפשר יהיה לתאם ולזכור הקשרים."><Btn onClick={()=>setOpen(true)}>+ איש קשר</Btn></Head><section className="grid three">{store.people.map(p=><article className="panel" key={p.name}><div className="person"><div className="avatar">{p.name[0]}</div><div><h2 style={{margin:0}}>{p.name}</h2><p className="muted" style={{margin:'4px 0 0'}}>{p.role}</p></div><button className="deleteTiny" onClick={()=>deletePerson(p.name)} aria-label={`מחיקת ${p.name}`}>מחק</button></div><div className="list" style={{marginTop:14}}><div className="row"><span>טלפון</span><b>{p.phone||'—'}</b></div><div className="row"><span>פרקים</span><b>{p.episodes}</b></div><div className="row"><span>הערה</span><p>{p.note||'—'}</p></div></div></article>)}</section>{open&&<Modal title="איש קשר חדש" subtitle="מתאים למנחים, מרואיינים, עורכים, סושיאל ואנשי אולפן." onClose={()=>setOpen(false)}><form className="smartForm" onSubmit={add}><FormRow label="שם מלא" name="name" required/><FormRow label="תפקיד מוצג" name="role"/><FormRow label="סוג"><select name="type"><option value="guest">מרואיין</option><option value="host">מנחה</option><option value="producer">מפיק/ה</option><option value="editor">עורך/ת</option><option value="social">סושיאל</option><option value="studio">אולפן</option></select></FormRow><FormRow label="טלפון" name="phone"/><TextArea label="הערות / העדפות / הקשר" name="note"/><div className="formActions"><button className="btn light" type="button" onClick={()=>setOpen(false)}>ביטול</button><button className="btn gold">שמירת איש קשר</button></div></form></Modal>}</>;
+ return <><Head eyebrow="אנשים" title="מנחים, מרואיינים וצוות" subtitle="איש קשר כולל תפקיד, טלפון והערות הפקה — כדי שאפשר יהיה לתאם ולזכור הקשרים."><Btn onClick={()=>setOpen(true)}>+ איש קשר</Btn></Head><section className="grid three">{store.people.map(p=><article className="panel" key={p.name}><div className="person"><div className="avatar">{p.name[0]}</div><div><h2 style={{margin:0}}>{p.name}</h2><p className="muted" style={{margin:'4px 0 0'}}>{p.role}</p></div><button className="deleteTiny" onClick={()=>deletePerson(p.name)} aria-label={`מחיקת ${p.name}`}>מחק</button></div><div className="list" style={{marginTop:14}}><div className="row"><span>טלפון</span><b>{p.phone||'—'}</b></div>{p.email&&<div className="row"><span>אימייל</span><b>{p.email}</b></div>}<div className="row"><span>פרקים</span><b>{p.episodes}</b></div><div className="row"><span>הערה</span><p>{p.note||'—'}</p></div></div></article>)}</section>{open&&<Modal title="איש קשר חדש" subtitle="מתאים למנחים, מרואיינים, עורכים, סושיאל ואנשי אולפן." onClose={()=>setOpen(false)}><form className="smartForm" onSubmit={add}><FormRow label="שם מלא" name="name" required/><FormRow label="תפקיד מוצג" name="role"/><FormRow label="סוג"><select name="type"><option value="guest">מרואיין</option><option value="host">מנחה</option><option value="producer">מפיק/ה</option><option value="editor">עורך/ת</option><option value="social">סושיאל</option><option value="studio">אולפן</option></select></FormRow><FormRow label="טלפון" name="phone"/><TextArea label="הערות / העדפות / הקשר" name="note"/><div className="formActions"><button className="btn light" type="button" onClick={()=>setOpen(false)}>ביטול</button><button className="btn gold">שמירת איש קשר</button></div></form></Modal>}</>;
 }
