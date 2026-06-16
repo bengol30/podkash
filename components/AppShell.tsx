@@ -1,6 +1,8 @@
 import Link from 'next/link';
+import { getSession } from '@/lib/auth';
+import { SessionBar } from './SessionBar';
 
-const nav = [
+const baseNav = [
   ['/', 'סקירה', '⌂'],
   ['/episodes', 'פרקים', '🎙'],
   ['/production', 'הפקה', '🎬'],
@@ -11,14 +13,20 @@ const nav = [
   ['/messages', 'הודעות', '💬'],
 ];
 
-export function AppShell({ children, active }: { children: React.ReactNode; active: string }) {
+export async function AppShell({ children, active }: { children: React.ReactNode; active: string }) {
+  const session = await getSession();
+  const isAdmin = session?.role === 'admin';
+  const nav = isAdmin ? [...baseNav, ['/team', 'צוות', '👤']] : baseNav;
   return <div className="appShell">
     <aside className="side">
       <Link href="/" className="brand"><div className="mark">פ</div><div><b>פודקש</b><span>Podcast OS</span></div></Link>
       <nav className="sideNav">{nav.map(([href,label,icon]) => <Link key={href} className={active === href ? 'on' : ''} href={href}><span>{icon}</span>{label}</Link>)}</nav>
       <div className="sideNote"><b>מה חשוב עכשיו?</b><p>כל מסך עונה על צורך תפעולי אחר: פרקים, צילום, הפצה, אנשים ומשימות.</p></div>
     </aside>
-    <main className="content">{children}</main>
+    <main className="content">
+      {session && <SessionBar name={session.name} role={session.role} />}
+      {children}
+    </main>
     <nav className="tabbar">{nav.map(([href,label,icon]) => <Link key={href} className={active === href ? 'on' : ''} href={href}><span>{icon}</span><small>{label}</small></Link>)}</nav>
   </div>
 }

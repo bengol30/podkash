@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { readStore, writeStore } from '@/lib/db';
+import { getSession, storeIdForSession } from '@/lib/auth';
 import { seedStore, type Store } from '@/lib/store-types';
 
 export const dynamic = 'force-dynamic';
@@ -25,7 +26,8 @@ function errorResponse(error: unknown) {
 
 export async function GET() {
   try {
-    return NextResponse.json(await readStore());
+    const storeId = storeIdForSession(await getSession());
+    return NextResponse.json(await readStore(storeId));
   } catch (error) {
     return errorResponse(error);
   }
@@ -33,8 +35,9 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
+    const storeId = storeIdForSession(await getSession());
     const data = normalizeStore(await request.json());
-    return NextResponse.json(await writeStore(data));
+    return NextResponse.json(await writeStore(data, storeId));
   } catch (error) {
     return errorResponse(error);
   }

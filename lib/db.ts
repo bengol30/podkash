@@ -86,36 +86,117 @@ function coerceStoreData(value: unknown): Store {
   };
 }
 
-export async function readStore(): Promise<Store> {
+// Generic key/value access on the podkash_store table (no shape coercion).
+export async function readRaw(id: string): Promise<unknown | null> {
   if (!databaseUrl && canUseSupabaseRest()) {
-    const rows = await supabaseRest<Array<{ data: unknown }>>('podkash_store?id=eq.default&select=data&limit=1');
-    return coerceStoreData(rows[0]?.data);
+    const rows = await supabaseRest<Array<{ data: unknown }>>(`podkash_store?id=eq.${encodeURIComponent(id)}&select=data&limit=1`);
+    return rows[0]?.data ?? null;
   }
   await ensureStoreTable();
   const db = sql();
-  const rows = await db<{ data: unknown }[]>`select data from podkash_store where id = 'default' limit 1`;
-  return coerceStoreData(rows[0]?.data);
+  const rows = await db<{ data: unknown }[]>`select data from podkash_store where id = ${id} limit 1`;
+  return rows[0]?.data ?? null;
 }
 
-export async function writeStore(data: Store): Promise<Store> {
-  const store = coerceStoreData(data);
+export async function writeRaw(id: string, data: unknown): Promise<void> {
   if (!databaseUrl && canUseSupabaseRest()) {
-    const rows = await supabaseRest<Array<{ data: unknown }>>('podkash_store', {
+    await supabaseRest('podkash_store', {
       method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-      body: JSON.stringify({ id: 'default', data: store, updated_at: new Date().toISOString() }),
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ id, data, updated_at: new Date().toISOString() }),
     });
-    return coerceStoreData(rows[0]?.data);
+    return;
   }
   await ensureStoreTable();
   const db = sql();
-  const rows = await db<{ data: unknown }[]>`
+  await db`
     insert into podkash_store (id, data, updated_at)
-    values ('default', ${db.json(store)}, now())
+    values (${id}, ${db.json(data as Parameters<typeof db.json>[0])}, now())
     on conflict (id) do update set data = excluded.data, updated_at = now()
-    returning data
   `;
-  return coerceStoreData(rows[0].data);
+}
+
+export async function readStore(id = 'default'): Promise<Store> {
+  return coerceStoreData(await readRaw(id));
+}
+
+export async function writeStore(data: Store, id = 'default'): Promise<Store> {
+  const store = coerceStoreData(data);
+  await writeRaw(id, store);
+  return store;
+}
+
+// ---- Users (admin + hosts), stored as a dedicated podkash_store row ----
+export const blankStore: Store = { episodes: [], people: [], tasks: [], messages: [], platforms: [], sessions: [], applications: [] };
+
+export type StoredUser = {
+  id: string;
+  name: string;
+  username: string;
+  role: 'admin' | 'host';
+  hostId: string;
+  passwordHash: string;
+  createdAt: string;
+};
+export type PublicUser = Omit<StoredUser, 'passwordHash'>;
+
+const USERS_ID = 'podkash_users';
+
+function hashPassword(password: string) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+export function verifyPassword(password: string, stored: string) {
+  const [salt, hash] = (stored || '').split(':');
+  if (!salt || !hash) return false;
+  const candidate = crypto.scryptSync(password, salt, 64);
+  const expected = Buffer.from(hash, 'hex');
+  return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
+}
+
+async function getUsersRaw(): Promise<StoredUser[]> {
+  const raw = await readRaw(USERS_ID) as { users?: StoredUser[] } | null;
+  return Array.isArray(raw?.users) ? raw!.users : [];
+}
+
+async function saveUsersRaw(users: StoredUser[]) {
+  await writeRaw(USERS_ID, { users });
+}
+
+export async function getUserByUsername(username: string): Promise<StoredUser | null> {
+  const wanted = username.trim().toLowerCase();
+  const users = await getUsersRaw();
+  return users.find(u => u.username.toLowerCase() === wanted) || null;
+}
+
+export async function listHosts(): Promise<PublicUser[]> {
+  const users = await getUsersRaw();
+  return users.filter(u => u.role === 'host').map(({ passwordHash, ...rest }) => rest);
+}
+
+export async function createHost(input: { name: string; username: string; password: string }): Promise<PublicUser> {
+  const name = input.name.trim();
+  const username = input.username.trim();
+  if (!name || !username || !input.password) throw new Error('חסר שם, שם משתמש או סיסמה');
+  if (!/^[a-zA-Z0-9._-]{3,}$/.test(username)) throw new Error('שם המשתמש חייב להיות 3 תווים ומעלה (אותיות/ספרות/._-)');
+  if (username.toLowerCase() === 'admin') throw new Error('שם המשתמש "admin" שמור למנהל');
+  const users = await getUsersRaw();
+  if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) throw new Error('שם המשתמש כבר תפוס');
+  const id = `h_${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
+  const user: StoredUser = { id, name, username, role: 'host', hostId: id, passwordHash: hashPassword(input.password), createdAt: new Date().toISOString() };
+  await saveUsersRaw([...users, user]);
+  // Seed a blank, isolated store for the new host.
+  await writeRaw(`host:${id}`, blankStore);
+  const { passwordHash, ...pub } = user;
+  return pub;
+}
+
+export async function deleteHost(id: string): Promise<void> {
+  const users = await getUsersRaw();
+  await saveUsersRaw(users.filter(u => u.id !== id));
+  // Note: the host's data row (host:<id>) is intentionally kept, not deleted.
 }
 
 function tokenSecret() {

@@ -1,24 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifySession, SESSION_COOKIE } from '@/lib/session';
 
 const PUBLIC_PATHS = ['/login', '/join', '/api/auth/login', '/api/applications'];
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`));
-}
-
-async function sha256(input: string) {
-  const data = new TextEncoder().encode(input);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function validSession(value?: string) {
-  if (!value) return false;
-  const secret = process.env.SESSION_SECRET;
-  const password = process.env.ADMIN_PASSWORD;
-  if (!secret || !password) return false;
-  const expected = await sha256(`${password}:${secret}`);
-  return value === expected;
 }
 
 export async function middleware(request: NextRequest) {
@@ -31,7 +17,8 @@ export async function middleware(request: NextRequest) {
     isPublicPath(pathname)
   ) return NextResponse.next();
 
-  if (await validSession(request.cookies.get('podkash_admin')?.value)) {
+  const session = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);
+  if (session) {
     return NextResponse.next();
   }
 
