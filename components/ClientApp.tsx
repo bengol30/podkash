@@ -624,16 +624,20 @@ function parseSession(ss: Session): ParsedSession {
     if (!Number.isNaN(s.getTime())) {
       const e = ss.endAt ? new Date(ss.endAt) : null;
       const startMin = s.getHours() * 60 + s.getMinutes();
-      const endMin = e && !Number.isNaN(e.getTime()) ? e.getHours() * 60 + e.getMinutes() : startMin + 60;
+      let endMin = e && !Number.isNaN(e.getTime()) ? e.getHours() * 60 + e.getMinutes() : startMin + 60;
+      if (endMin <= startMin) endMin = startMin + 60;
       return { ss, date: s, dateKey: calDateKey(s), startMin, endMin };
     }
   }
+  // Parse formatted strings like "יום ג׳, 16.06.26, 10:15–..." (2- or 4-digit year, any separators).
   const raw = ss.time || '';
-  const dm = raw.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-  const date = dm ? new Date(Number(dm[3]), Number(dm[2]) - 1, Number(dm[1])) : null;
+  const dm = raw.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+  let date: Date | null = null;
+  if (dm) { let y = Number(dm[3]); if (y < 100) y += 2000; date = new Date(y, Number(dm[2]) - 1, Number(dm[1])); }
   const times = raw.match(/(\d{1,2}):(\d{2})/g) || [];
   const startMin = times[0] ? Number(times[0].split(':')[0]) * 60 + Number(times[0].split(':')[1]) : null;
-  const endMin = times[1] ? Number(times[1].split(':')[0]) * 60 + Number(times[1].split(':')[1]) : (startMin != null ? startMin + 60 : null);
+  let endMin = times[1] ? Number(times[1].split(':')[0]) * 60 + Number(times[1].split(':')[1]) : null;
+  if (startMin != null && (endMin == null || endMin <= startMin)) endMin = startMin + 60;
   return { ss, date, dateKey: date ? calDateKey(date) : null, startMin, endMin };
 }
 
