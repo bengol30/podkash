@@ -31,7 +31,7 @@ export type Person = typeof people[number] & { email?: string; city?: string; so
 export type Task = typeof tasks[number];
 export type Message = typeof messages[number];
 export type Platform = typeof platforms[number];
-export type Session = typeof productionSessions[number];
+export type Session = typeof productionSessions[number] & { startAt?: string; endAt?: string };
 export type ApplicationType = 'guest' | 'host';
 export type Application = {
   id: string;
