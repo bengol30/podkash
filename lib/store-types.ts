@@ -12,6 +12,8 @@ export type Episode = typeof episodes[number] & {
   contentPlan?: string;
   coordinationNote?: string;
   assetsNote?: string;
+  ownerHostId?: string;
+  ownerName?: string;
   driveFolderUrl?: string;
   fullVideoUrl?: string;
   youtubeUrl?: string;
