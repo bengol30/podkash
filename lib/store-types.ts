@@ -49,6 +49,20 @@ export type Application = {
   data: Record<string, string>;
 };
 
+// Shared studio bookings (one global pool — single studio, conflict-checked, admin-approved).
+export type Booking = {
+  id: string;
+  ownerHostId: string; // 'default' = admin
+  ownerName: string;
+  episodeId?: number | null;
+  episodeTitle: string;
+  studio: string;
+  startAt: string; // ISO
+  endAt: string;   // ISO
+  status: 'pending' | 'confirmed';
+  createdAt: string;
+};
+
 export type Store = {
   episodes: Episode[];
   people: Person[];

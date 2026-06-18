@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { Dispatch, FormEvent, SetStateAction, useEffect, useRef, useState } from 'react';
 import { type EpisodeStatus } from '@/lib/data';
-import { seedStore as seed, type Application, type Episode, type Person, type Session, type Store } from '@/lib/store-types';
+import { seedStore as seed, type Application, type Booking, type Episode, type Person, type Session, type Store } from '@/lib/store-types';
 import { cleanDateTime, formatDateTimeInput, formatDateTimeRange } from '@/lib/time';
 
 const LEGACY_KEY = 'podkash:v1';
@@ -616,94 +616,130 @@ function calPad(n: number) { return String(n).padStart(2, '0'); }
 function calDateKey(d: Date) { return `${d.getFullYear()}-${calPad(d.getMonth() + 1)}-${calPad(d.getDate())}`; }
 function calMinToLabel(min: number) { return `${calPad(Math.floor(min / 60))}:${calPad(min % 60)}`; }
 
-type ParsedSession = { ss: Session; date: Date | null; dateKey: string | null; startMin: number | null; endMin: number | null };
-
-function parseSession(ss: Session): ParsedSession {
-  if (ss.startAt) {
-    const s = new Date(ss.startAt);
-    if (!Number.isNaN(s.getTime())) {
-      const e = ss.endAt ? new Date(ss.endAt) : null;
-      const startMin = s.getHours() * 60 + s.getMinutes();
-      let endMin = e && !Number.isNaN(e.getTime()) ? e.getHours() * 60 + e.getMinutes() : startMin + 60;
-      if (endMin <= startMin) endMin = startMin + 60;
-      return { ss, date: s, dateKey: calDateKey(s), startMin, endMin };
-    }
-  }
-  // Parse formatted strings like "יום ג׳, 16.06.26, 10:15–..." (2- or 4-digit year, any separators).
-  const raw = ss.time || '';
-  const dm = raw.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
-  let date: Date | null = null;
-  if (dm) { let y = Number(dm[3]); if (y < 100) y += 2000; date = new Date(y, Number(dm[2]) - 1, Number(dm[1])); }
-  const times = raw.match(/(\d{1,2}):(\d{2})/g) || [];
-  const startMin = times[0] ? Number(times[0].split(':')[0]) * 60 + Number(times[0].split(':')[1]) : null;
-  let endMin = times[1] ? Number(times[1].split(':')[0]) * 60 + Number(times[1].split(':')[1]) : null;
-  if (startMin != null && (endMin == null || endMin <= startMin)) endMin = startMin + 60;
-  return { ss, date, dateKey: date ? calDateKey(date) : null, startMin, endMin };
-}
-
 function CalendarView({ store }: { store: Store }) {
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [role, setRole] = useState<'admin' | 'host'>('host');
+  const [myHostId, setMyHostId] = useState('');
+  const [loading, setLoading] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const parsed = store.sessions.map(parseSession);
-  const dated = parsed.filter(p => p.dateKey);
-  const undated = parsed.filter(p => !p.dateKey);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const dayMap = new Map<string, ParsedSession[]>();
-  for (const p of dated) { const arr = dayMap.get(p.dateKey!) || []; arr.push(p); dayMap.set(p.dateKey!, arr); }
-  const days = Array.from(dayMap.entries())
-    .map(([key, items]) => ({ key, date: items[0].date!, items: items.slice().sort((a, b) => (a.startMin ?? 0) - (b.startMin ?? 0)) }))
-    .sort((a, b) => a.date.getTime() - b.date.getTime());
+  async function load() {
+    setLoading(true);
+    const res = await fetch('/api/bookings', { cache: 'no-store' });
+    if (res.ok) { const d = await res.json(); setBookings(d.bookings || []); setRole(d.role || 'host'); setMyHostId(d.hostId || ''); }
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  async function addBooking(ev: FormEvent<HTMLFormElement>) {
+    ev.preventDefault(); setError('');
+    const f = ev.currentTarget; const get = (n: string) => String(new FormData(f).get(n) || '').trim();
+    const startRaw = get('start'); const endRaw = get('end');
+    if (!startRaw || !endRaw) { setError('יש לבחור שעת התחלה וסיום'); return; }
+    const ep = store.episodes.find(e => String(e.id) === get('episode'));
+    setSaving(true);
+    const res = await fetch('/api/bookings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startAt: new Date(startRaw).toISOString(), endAt: new Date(endRaw).toISOString(), studio: get('studio') || 'אולפן', episodeId: ep?.id ?? null, episodeTitle: ep?.title || 'צילום' }),
+    });
+    const d = await res.json().catch(() => ({})); setSaving(false);
+    if (!res.ok) { setError(d.error || 'שגיאה בקביעת הזמן'); return; }
+    setOpen(false); load();
+  }
+  async function decide(id: string, action: 'approve' | 'reject') {
+    const res = await fetch('/api/bookings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, action }) });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert(d.error || 'שגיאה'); }
+    load();
+  }
+  async function cancelBooking(id: string) {
+    if (!window.confirm('לבטל את ההזמנה?')) return;
+    await fetch(`/api/bookings?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    load();
+  }
+
+  const parsed = bookings.map(b => { const s = new Date(b.startAt); const e = new Date(b.endAt); const startMin = s.getHours() * 60 + s.getMinutes(); let endMin = e.getHours() * 60 + e.getMinutes(); if (endMin <= startMin) endMin = startMin + 60; return { b, date: s, dateKey: calDateKey(s), startMin, endMin }; });
+  const dayMap = new Map<string, typeof parsed>();
+  for (const p of parsed) { const arr = dayMap.get(p.dateKey) || []; arr.push(p); dayMap.set(p.dateKey, arr); }
+  const days = Array.from(dayMap.entries()).map(([key, items]) => ({ key, date: items[0].date, items: items.slice().sort((a, b) => a.startMin - b.startMin) })).sort((a, b) => a.date.getTime() - b.date.getTime());
+  const pendingCount = bookings.filter(b => b.status === 'pending').length;
 
   const weekdayFmt = new Intl.DateTimeFormat('he-IL', { weekday: 'long' });
   const monthFmt = new Intl.DateTimeFormat('he-IL', { month: 'short' });
   const longFmt = new Intl.DateTimeFormat('he-IL', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
+  const head = <Head eyebrow="יומן אולפן" title="יומן צילומים משותף" subtitle="כל ההזמנות במקום אחד. זמן תפוס נחסם אוטומטית; הזמנות של מנחים ממתינות לאישור המנהל."><Btn onClick={() => setOpen(true)}>+ זמן צילום</Btn></Head>;
+
+  const modal = open && <Modal title="קביעת זמן צילום" subtitle="בחר פרק, אולפן ושעות. אם הזמן כבר תפוס — תקבל התראה ולא תיווצר התנגשות." onClose={() => setOpen(false)}>
+    <form className="smartForm" onSubmit={addBooking}>
+      <FormRow label="פרק"><select name="episode">{store.episodes.length ? store.episodes.map(e => <option key={e.id} value={e.id}>{e.title}</option>) : <option value="">— אין פרקים —</option>}</select></FormRow>
+      <FormRow label="אולפן / מיקום"><input name="studio" defaultValue="אולפן" /></FormRow>
+      <FormRow label="תחילת צילום"><input name="start" type="datetime-local" required /></FormRow>
+      <FormRow label="סיום צילום"><input name="end" type="datetime-local" required /></FormRow>
+      {error && <p className="joinError" style={{ gridColumn: '1/-1' }}>{error}</p>}
+      <div className="formActions"><button className="btn light" type="button" onClick={() => setOpen(false)}>ביטול</button><button className="btn gold" disabled={saving}>{saving ? 'בודק…' : 'קבע זמן'}</button></div>
+    </form>
+  </Modal>;
+
+  function rowActions(b: Booking) {
+    const canCancel = role === 'admin' || b.ownerHostId === myHostId;
+    return <div className="calRowActions">
+      {role === 'admin' && b.status === 'pending' && <><button className="miniBtn" onClick={() => decide(b.id, 'approve')}>אשר</button><button className="deleteTiny" onClick={() => decide(b.id, 'reject')}>דחה</button></>}
+      {canCancel && <button className="deleteTiny" onClick={() => cancelBooking(b.id)}>בטל</button>}
+    </div>;
+  }
+
   if (selectedKey) {
     const day = days.find(d => d.key === selectedKey);
     if (day) {
-      const timed = day.items.filter(p => p.startMin != null) as (ParsedSession & { startMin: number })[];
-      const noTime = day.items.filter(p => p.startMin == null);
-      const ends = timed.map(p => p.endMin ?? p.startMin + 60);
-      const minHour = timed.length ? Math.max(0, Math.floor(Math.min(...timed.map(p => p.startMin)) / 60) - 1) : 8;
-      const maxHour = timed.length ? Math.min(24, Math.ceil(Math.max(...ends) / 60) + 1) : 20;
+      const minHour = Math.max(0, Math.floor(Math.min(...day.items.map(p => p.startMin)) / 60) - 1);
+      const maxHour = Math.min(24, Math.ceil(Math.max(...day.items.map(p => p.endMin)) / 60) + 1);
       const hours: number[] = []; for (let h = minHour; h <= maxHour; h++) hours.push(h);
       const totalPx = (maxHour - minHour) * 60;
-
-      const evs = timed.slice().sort((a, b) => a.startMin - b.startMin).map(p => ({ p, startMin: p.startMin, endMin: p.endMin ?? p.startMin + 60, lane: 0, lanes: 1 }));
+      const evs = day.items.slice().sort((a, b) => a.startMin - b.startMin).map(p => ({ p, startMin: p.startMin, endMin: p.endMin, lane: 0, lanes: 1 }));
       const laneEnds: number[] = [];
       for (const ev of evs) { let placed = false; for (let i = 0; i < laneEnds.length; i++) { if (laneEnds[i] <= ev.startMin) { ev.lane = i; laneEnds[i] = ev.endMin; placed = true; break; } } if (!placed) { ev.lane = laneEnds.length; laneEnds.push(ev.endMin); } }
       const laneCount = Math.max(1, laneEnds.length);
       evs.forEach(ev => { ev.lanes = laneCount; });
-
       return <>
+        {head}
         <button className="btn light calBack" onClick={() => setSelectedKey(null)}>‹ חזרה לכל הימים</button>
         <h2 className="calDayTitle">{longFmt.format(day.date)}</h2>
         <div className="calTimeline" style={{ height: totalPx }}>
           {hours.map(h => <div className="calHour" key={h} style={{ top: (h - minHour) * 60 }}><span className="calHourLabel">{calPad(h)}:00</span></div>)}
           <div className="calEventsLayer">
-            {evs.map((ev, i) => <div className="calEvent" key={i} style={{ top: ev.startMin - minHour * 60, height: Math.max(36, ev.endMin - ev.startMin), right: `${(ev.lane / ev.lanes) * 100}%`, width: `calc(${100 / ev.lanes}% - 6px)` }}>
-              <b>{ev.p.ss.episode?.title || 'צילום'}</b>
-              <span>{calMinToLabel(ev.startMin)}–{calMinToLabel(ev.endMin)} · {ev.p.ss.studio}</span>
-              <small>{ev.p.ss.episode?.host || '—'}{ev.p.ss.episode?.guests && ev.p.ss.episode.guests !== '—' ? ` · ${ev.p.ss.episode.guests}` : ''}</small>
-            </div>)}
+            {evs.map((ev, i) => { const b = ev.p.b; const pend = b.status === 'pending'; return <div className={`calEvent${pend ? ' pending' : ''}`} key={i} style={{ top: ev.startMin - minHour * 60, height: Math.max(38, ev.endMin - ev.startMin), right: `${(ev.lane / ev.lanes) * 100}%`, width: `calc(${100 / ev.lanes}% - 6px)` }}>
+              <b>{b.episodeTitle}</b>
+              <span>{calMinToLabel(ev.startMin)}–{calMinToLabel(ev.endMin)} · {b.studio}</span>
+              <small>{b.ownerName}{pend ? ' · ממתין' : ''}</small>
+            </div>; })}
           </div>
         </div>
-        {noTime.length > 0 && <div className="calNoTime">{noTime.map((p, i) => <div className="row" key={i}><div><h3>{p.ss.episode?.title || 'צילום'}</h3><p className="muted">{p.ss.studio} · שעה לא נקבעה</p></div></div>)}</div>}
+        <div className="calNoTime" style={{ marginTop: 16 }}>{day.items.map(p => { const b = p.b; const pend = b.status === 'pending'; return <div className="row" key={b.id} style={{ alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 150 }}><h3 style={{ margin: 0 }}>{b.episodeTitle} {pend && <span className="pill" style={{ background: '#fff0d6', color: '#8a5a12' }}>ממתין לאישור</span>}</h3><p className="muted" style={{ margin: '4px 0 0' }}>{calMinToLabel(p.startMin)}–{calMinToLabel(p.endMin)} · {b.studio} · נקבע ע״י {b.ownerName}</p></div>
+          {rowActions(b)}
+        </div>; })}</div>
+        {modal}
       </>;
     }
   }
 
   return <>
-    <section className="calDays">
+    {head}
+    {role === 'admin' && pendingCount > 0 && <div className="credBox" style={{ background: '#fff7e9', borderColor: '#f0d8a8' }}><b>{pendingCount} הזמנות ממתינות לאישורך</b><p className="muted" style={{ margin: '4px 0 0' }}>היכנס ליום הרלוונטי כדי לאשר או לדחות.</p></div>}
+    {loading ? <p className="muted">טוען יומן…</p> : <section className="calDays">
       {days.length ? days.map(d => {
-        const first = d.items.find(p => p.startMin != null)?.startMin;
+        const pend = d.items.filter(p => p.b.status === 'pending').length;
         return <button className="calDayCard" key={d.key} onClick={() => setSelectedKey(d.key)}>
           <div className="calDayDate"><b>{d.date.getDate()}</b><span>{monthFmt.format(d.date)}</span></div>
-          <div className="calDayInfo"><h3>{weekdayFmt.format(d.date)}</h3><p className="muted">{d.items.length} צילומים{first != null ? ` · החל מ-${calMinToLabel(first)}` : ''}</p></div>
+          <div className="calDayInfo"><h3>{weekdayFmt.format(d.date)}</h3><p className="muted">{d.items.length} צילומים · החל מ-{calMinToLabel(d.items[0].startMin)}{pend ? ` · ${pend} ממתינים` : ''}</p></div>
           <span className="calDayChevron">‹</span>
         </button>;
-      }) : <p className="muted">אין עדיין ימי צילום עם תאריך. הוסף זמן צילום כדי שהיומן יתמלא.</p>}
-    </section>
-    {undated.length > 0 && <div className="calNoTime" style={{ marginTop: 18 }}><p className="eyebrow" style={{ margin: '0 0 6px' }}>מועדים מוצעים / ללא תאריך</p>{undated.map((p, i) => <div className="row" key={i}><div><h3>{p.ss.episode?.title || 'צילום'}</h3><p className="muted">{cleanDateTime(p.ss.time)} · {p.ss.studio}</p></div></div>)}</div>}
+      }) : <p className="muted">אין עדיין ימי צילום. לחץ «+ זמן צילום» כדי לקבוע.</p>}
+    </section>}
+    {modal}
   </>;
 }
 
@@ -714,8 +750,8 @@ function ProductionSessions({ store }: { store: Store }) {
 export function SessionsClient({ context='calendar' }: { context?: 'calendar' | 'production' }) {
  const [store,setStore]=useStore(); const [open,setOpen]=useState(false);
  function add(ev:FormEvent<HTMLFormElement>){ev.preventDefault(); const f=ev.currentTarget; const ep=store.episodes.find(e=>e.title===field(f,'episode')) || store.episodes[0]; const startAt=field(f,'start'); const endAt=field(f,'end'); const time=formatDateTimeRange(startAt, endAt); const session: Session = { episode: ep, studio: field(f,'studio')||'אולפן תל אביב', time, startAt, endAt, confirmations: [], missing: ['אישור מנחה','אישור מרואיין','אישור אולפן'] }; setStore(s=>({...s,sessions:[session,...s.sessions], episodes:s.episodes.map(e=>e.id===ep.id?{...e,recording:time,status:e.status==='רעיון'?'בתיאום':e.status}:e)})); setOpen(false);}
- const isProduction=context==='production';
- return <><Head eyebrow={isProduction?'הפקה וצילום':'יומן צילום'} title={isProduction?'תיאום סשנים בלי נפילות':'יומן צילומים'} subtitle={isProduction?'קביעת סשן צילום עם תאריך ושעה בפורמט מסודר, אולפן, פרק ואישורים.':'ימי הצילום לפי תאריך. לחיצה על יום פותחת לוז שעתי מסודר.'}><Btn onClick={()=>setOpen(true)}>{isProduction?'+ סשן צילום':'+ זמן צילום'}</Btn></Head>{isProduction ? <ProductionSessions store={store} /> : <CalendarView store={store} />}{open&&<Modal title={isProduction?'סשן צילום חדש':'זמן צילום חדש'} subtitle="בחר פרק, אולפן, תאריך ושעת התחלה/סיום בפורמט הסטנדרטי של המכשיר." onClose={()=>setOpen(false)}><form className="smartForm" onSubmit={add}><FormRow label="פרק"><select name="episode">{store.episodes.map(e=><option key={e.id}>{e.title}</option>)}</select></FormRow><FormRow label="אולפן / מיקום" name="studio"/><FormRow label="תחילת צילום"><input name="start" type="datetime-local" required /></FormRow><FormRow label="סיום צילום"><input name="end" type="datetime-local" /></FormRow><div className="formActions"><button className="btn light" type="button" onClick={()=>setOpen(false)}>ביטול</button><button className="btn gold">שמירה</button></div></form></Modal>}</>;
+ if (context !== 'production') return <CalendarView store={store} />;
+ return <><Head eyebrow="הפקה וצילום" title="תיאום סשנים בלי נפילות" subtitle="קביעת סשן צילום עם תאריך ושעה, אולפן, פרק ואישורים."><Btn onClick={()=>setOpen(true)}>+ סשן צילום</Btn></Head><ProductionSessions store={store} />{open&&<Modal title="סשן צילום חדש" subtitle="בחר פרק, אולפן, תאריך ושעת התחלה/סיום." onClose={()=>setOpen(false)}><form className="smartForm" onSubmit={add}><FormRow label="פרק"><select name="episode">{store.episodes.map(e=><option key={e.id}>{e.title}</option>)}</select></FormRow><FormRow label="אולפן / מיקום" name="studio"/><FormRow label="תחילת צילום"><input name="start" type="datetime-local" required /></FormRow><FormRow label="סיום צילום"><input name="end" type="datetime-local" /></FormRow><div className="formActions"><button className="btn light" type="button" onClick={()=>setOpen(false)}>ביטול</button><button className="btn gold">שמירה</button></div></form></Modal>}</>;
 }
 
 export function PeopleClient(){

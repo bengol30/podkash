@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import postgres from 'postgres';
-import { type Store, seedStore } from './store-types';
+import { type Store, type Booking, seedStore } from './store-types';
 
 const databaseUrl = (process.env.DATABASE_URL || process.env.POSTGRES_URL || '').trim();
 const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim().replace(/\/$/, '');
@@ -197,6 +197,20 @@ export async function deleteHost(id: string): Promise<void> {
   const users = await getUsersRaw();
   await saveUsersRaw(users.filter(u => u.id !== id));
   // Note: the host's data row (host:<id>) is intentionally kept, not deleted.
+}
+
+// ---- Shared studio bookings (one global pool) ----
+export async function getBookings(): Promise<Booking[]> {
+  const raw = await readRaw('bookings') as { bookings?: Booking[] } | null;
+  return Array.isArray(raw?.bookings) ? raw!.bookings : [];
+}
+
+export async function saveBookings(bookings: Booking[]): Promise<void> {
+  await writeRaw('bookings', { bookings });
+}
+
+export async function bookingsRowExists(): Promise<boolean> {
+  return (await readRaw('bookings')) != null;
 }
 
 function tokenSecret() {
