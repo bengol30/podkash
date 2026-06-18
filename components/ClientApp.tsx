@@ -6,7 +6,6 @@ import { type EpisodeStatus } from '@/lib/data';
 import { seedStore as seed, type Application, type Booking, type Episode, type Person, type Session, type Store } from '@/lib/store-types';
 import { cleanDateTime, formatDateTimeInput, formatDateTimeRange } from '@/lib/time';
 
-const LEGACY_KEY = 'podkash:v1';
 const statusFlow: EpisodeStatus[] = ['רעיון','בתכנון תוכן','בתיאום','צילום נקבע','צולם','בעריכה','ממתין לאישור','מוכן לפרסום','פורסם'];
 
 const applicationFieldLabels: Record<string, string> = {
@@ -115,24 +114,20 @@ function useStore(initialStore?: Store) {
 
   useEffect(() => {
     let cancelled = false;
+    // Drop any stale legacy localStorage so it can never be merged over the DB again.
+    try { localStorage.removeItem('podkash:v1'); } catch {}
     async function load() {
       try {
         const res = await fetch('/api/store', { cache: 'no-store' });
         if (!res.ok) throw new Error(await res.text());
         const fromDb = normalizeStore(await res.json());
-        if (!cancelled) setStore(fromDb);
-
-        const legacy = localStorage.getItem(LEGACY_KEY);
-        if (legacy) {
-          const migrated = normalizeStore({ ...fromDb, ...JSON.parse(legacy) });
-          await fetch('/api/store', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(migrated) });
-          localStorage.removeItem(LEGACY_KEY);
-          if (!cancelled) setStore(migrated);
+        if (!cancelled) {
+          setStore(fromDb);
+          // Enable autosave ONLY after a successful load — a failed/blocked load must never overwrite good data.
+          setReady(true);
         }
       } catch (error) {
         console.error('Podkash DB load failed', error);
-      } finally {
-        if (!cancelled) setReady(true);
       }
     }
     load();
@@ -142,6 +137,11 @@ function useStore(initialStore?: Store) {
   useEffect(() => {
     if (!ready) return;
     if (skipNextSave.current) { skipNextSave.current = false; return; }
+    // Safety net: never overwrite the DB with a fully-empty store (prevents accidental wipes).
+    const isEmpty = !store.episodes.length && !store.people.length && !store.tasks.length
+      && !store.sessions.length && !store.messages.length && !store.platforms.length
+      && !(store.applications || []).length;
+    if (isEmpty) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       fetch('/api/store', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(normalizeStore(store)) })
