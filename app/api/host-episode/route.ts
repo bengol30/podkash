@@ -4,7 +4,7 @@ import { readStore, writeStore } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
-const ALLOWED = ['title', 'topic', 'status', 'host', 'guests', 'recording', 'publish'] as const;
+const ALLOWED = ['title', 'topic', 'status', 'host', 'guests', 'recording', 'recordingAt', 'publish'] as const;
 
 // Admin-only: edit an episode that lives in a specific host's store.
 export async function PATCH(request: Request) {
