@@ -197,7 +197,21 @@ export function EpisodesClient() {
   const [copied, setCopied] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState<Application | null>(null);
   const [hostEpisodes, setHostEpisodes] = useState<Episode[]>([]);
-  useEffect(() => { fetch('/api/all-episodes', { cache: 'no-store' }).then(r => r.ok ? r.json() : { episodes: [] }).then(d => setHostEpisodes(d.episodes || [])).catch(() => {}); }, []);
+  const [editHostEp, setEditHostEp] = useState<Episode | null>(null);
+  const [hostEpError, setHostEpError] = useState('');
+  const [hostEpSaving, setHostEpSaving] = useState(false);
+  function refreshHostEpisodes() { fetch('/api/all-episodes', { cache: 'no-store' }).then(r => r.ok ? r.json() : { episodes: [] }).then(d => setHostEpisodes(d.episodes || [])).catch(() => {}); }
+  useEffect(() => { refreshHostEpisodes(); }, []);
+  async function saveHostEpisode(ev: FormEvent<HTMLFormElement>) {
+    ev.preventDefault(); if (!editHostEp) return; setHostEpError('');
+    const f = ev.currentTarget; const get = (n: string) => String(new FormData(f).get(n) || '').trim();
+    const patch = { title: get('title') || editHostEp.title, topic: get('topic'), status: get('status'), host: get('host'), guests: get('guests'), recording: get('recording'), publish: get('publish') };
+    setHostEpSaving(true);
+    const res = await fetch('/api/host-episode', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hostId: editHostEp.ownerHostId, episodeId: editHostEp.id, patch }) });
+    const d = await res.json().catch(() => ({})); setHostEpSaving(false);
+    if (!res.ok) { setHostEpError(d.error || 'שגיאה בשמירה'); return; }
+    setEditHostEp(null); refreshHostEpisodes();
+  }
   const externalFormPath = '/join';
   const externalFormUrl = typeof window !== 'undefined' ? `${window.location.origin}${externalFormPath}` : externalFormPath;
   const filtered = store.episodes.filter(e => [e.title,e.topic,e.host,e.guests,e.status].join(' ').includes(q));
@@ -218,6 +232,17 @@ export function EpisodesClient() {
       brief: '', contentPlan: '', coordinationNote: '', assetsNote: ''
     };
     setStore(s => ({ ...s, episodes: [ep, ...s.episodes] })); setOpen(false);
+    // If a recording time was set, auto-open a pending studio slot in the shared calendar (conflict-checked, admin-approved).
+    const recordingRaw = field(form,'recording');
+    if (recordingRaw) {
+      const start = new Date(recordingRaw);
+      if (!Number.isNaN(start.getTime())) {
+        const end = new Date(start.getTime() + 2 * 60 * 60000);
+        fetch('/api/bookings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ startAt: start.toISOString(), endAt: end.toISOString(), studio: 'אולפן', episodeId: id, episodeTitle: title || 'צילום' }) })
+          .then(async r => { if (r.status === 409) alert('הפרק נוצר. שימו לב: מועד הצילום שבחרתם תפוס ביומן — בחרו זמן פנוי במסך היומן.'); })
+          .catch(() => {});
+      }
+    }
     window.setTimeout(() => {
       fetch('/api/google/drive/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ episodeId: id }) })
         .catch(error => console.error('Podkash Drive auto-sync failed', error));
@@ -237,7 +262,8 @@ export function EpisodesClient() {
   return <>
     <Head eyebrow="פרקים" title="כל פרק כמרכז עבודה" subtitle="יצירת פרק כוללת את המידע שבאמת צריך לתפעול: נושא, מנחה, מרואיינים, צילום, פרסום וסטטוס."><Btn onClick={()=>setOpen(true)}>+ פרק</Btn><Btn tone="gold" onClick={copyExternalFormLink}>{copied ? 'הקישור הועתק' : 'העתקת קישור הרשמה'}</Btn><Link className="btn light" href={externalFormPath} target="_blank">פתיחת הטופס</Link><input className="search" placeholder="חיפוש פרק" value={q} onChange={e=>setQ(e.target.value)} /></Head>
     <section className="metrics episodesMetrics"><Metric n={store.episodes.length} label="פרקים"/><Metric n={store.episodes.filter(e=>e.status==='צילום נקבע').length} label="צילום נקבע"/><Metric n={store.episodes.filter(e=>e.status==='בעריכה').length} label="בעריכה"/><Metric n={store.episodes.filter(e=>e.status==='מוכן לפרסום').length} label="לפרסום"/></section>
-    {hostEpisodes.length > 0 && <section className="panel" style={{marginBottom:16}}><h2 style={{display:'flex',alignItems:'center',gap:8}}>פרקים של מנחים <span className="pill blue">{hostEpisodes.length}</span></h2><p className="muted" style={{margin:'0 0 14px'}}>פרקים שנוצרו ע״י המנחים באזור האישי שלהם. הניהול נשאר אצל המנחה — כאן לצפייה ומעקב.</p><div className="grid three">{hostEpisodes.map(ep=><article className="episodeCard" key={`${ep.ownerHostId}-${ep.id}`}><div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}><span className="pill">{ep.status}</span><span className="pill green">מאת {ep.ownerName}</span></div><h3 style={{margin:'0 0 6px'}}>#{ep.number} · {ep.title}</h3><p className="muted" style={{margin:0}}>{ep.topic}<br/>מנחה: {ep.host} · מרואיינים: {ep.guests}<br/>צילום: {cleanDateTime(ep.recording)}</p></article>)}</div></section>}
+    {hostEpisodes.length > 0 && <section className="panel" style={{marginBottom:16}}><h2 style={{display:'flex',alignItems:'center',gap:8}}>פרקים של מנחים <span className="pill blue">{hostEpisodes.length}</span></h2><p className="muted" style={{margin:'0 0 14px'}}>פרקים שנוצרו ע״י המנחים באזור האישי שלהם. הניהול נשאר אצל המנחה — כאן לצפייה ומעקב.</p><div className="grid three">{hostEpisodes.map(ep=><article className="episodeCard" key={`${ep.ownerHostId}-${ep.id}`} onClick={()=>setEditHostEp(ep)} style={{cursor:'pointer'}}><div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}><span className="pill">{ep.status}</span><span className="pill green">מאת {ep.ownerName}</span></div><h3 style={{margin:'0 0 6px'}}>#{ep.number} · {ep.title}</h3><p className="muted" style={{margin:0}}>{ep.topic}<br/>מנחה: {ep.host} · מרואיינים: {ep.guests}<br/>צילום: {cleanDateTime(ep.recording)}</p><p className="muted" style={{margin:'8px 0 0',fontWeight:900,fontSize:12}}>לחץ לצפייה ועריכה ←</p></article>)}</div></section>}
+    {editHostEp && <Modal title={`פרק של ${editHostEp.ownerName}`} subtitle="צפייה ועריכה של פרטי הפרק. השינויים נשמרים אצל המנחה." onClose={()=>setEditHostEp(null)}><form className="smartForm" onSubmit={saveHostEpisode}><FormRow label="שם הפרק"><input name="title" defaultValue={editHostEp.title} required /></FormRow><FormRow label="מספר"><input defaultValue={editHostEp.number} disabled /></FormRow><FormRow label="נושא / זווית"><input name="topic" defaultValue={editHostEp.topic} /></FormRow><FormRow label="סטטוס"><select name="status" defaultValue={editHostEp.status}>{statusFlow.map(s=><option key={s}>{s}</option>)}</select></FormRow><FormRow label="מנחה"><input name="host" defaultValue={editHostEp.host} /></FormRow><FormRow label="מרואיינים"><input name="guests" defaultValue={editHostEp.guests} /></FormRow><FormRow label="מועד צילום"><input name="recording" defaultValue={editHostEp.recording} /></FormRow><FormRow label="מועד פרסום"><input name="publish" defaultValue={editHostEp.publish} /></FormRow>{hostEpError && <p className="joinError" style={{gridColumn:'1/-1'}}>{hostEpError}</p>}<div className="formActions"><button className="btn light" type="button" onClick={()=>setEditHostEp(null)}>סגור</button><button className="btn gold" disabled={hostEpSaving}>{hostEpSaving?'שומר…':'שמור שינויים'}</button></div></form></Modal>}
     <AssignApplicationsPrompt store={store} setStore={setStore} />
     <details className="disclosurePanel" style={{marginBottom:16}}><summary><span className={`pill ${unassignedApplications.length ? 'red' : 'green'}`}>{unassignedApplications.length}</span><div><h2>הרשמות חיצוניות חדשות</h2><p className="muted">הרשמות מהטופס שעדיין לא שויכו לפרק. פתח כדי לשייך כל אחת לפרק. לחיצה על השם פותחת את כל הפרטים.</p></div></summary><div className="disclosureBody"><div className="list">{unassignedApplications.length ? unassignedApplications.map(a=><div className="row applicationRow" key={a.id} style={{alignItems:'center',gap:10,flexWrap:'wrap'}}><button className="click" style={{flex:1,minWidth:160,textAlign:'inherit',background:'none',border:'none',cursor:'pointer',padding:0}} onClick={()=>setSelectedApplication(a)}><div><h3 style={{margin:0}}>{a.name}</h3><p className="muted" style={{margin:'4px 0 0'}}>{applicationTypeLabel(a.type)} · {a.phone} · {a.email}<br/>{applicationTopic(a)}</p></div></button><AssignControl a={a} store={store} setStore={setStore} /></div>) : <p className="muted">אין הרשמות חדשות שממתינות לשיוך 🎉</p>}</div></div></details>
     <section className="episodesMobileList">{filtered.map(e=><article className="mobileEpisodeCard" key={e.id}><Link href={`/episodes/${e.id}`} className="cardLink"><div className="mobileEpisodeTop"><span className="pill blue">#{e.number}</span>{e.urgent&&<span className="pill red">דחוף</span>}<span className="pill">{e.status}</span></div><h2>{e.title}</h2><p>{e.topic}</p><div className="mobileEpisodeFacts"><div><small>מנחה</small><b>{e.host}</b></div><div><small>מרואיינים</small><b>{e.guests}</b></div><div><small>צילום</small><b>{cleanDateTime(e.recording)}</b></div><div><small>פרסום</small><b>{cleanDateTime(e.publish)}</b></div></div><div className="progress"><span style={{width:e.progress+'%'}}/></div></Link><div className="mobileEpisodeActions"><button onClick={()=>advance(e.id)}>קדם סטטוס</button><Link href={`/episodes/${e.id}`}>פתח</Link><Link href={`/episodes/${e.id}`}>{taskCount(e)} משימות</Link><button className="deleteTiny" onClick={()=>deleteEpisode(e.id)} aria-label={`מחיקת ${e.title}`}>מחיקה</button></div></article>)}</section>
