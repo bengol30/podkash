@@ -15,7 +15,7 @@ export async function GET() {
   for (const host of hosts) {
     const store = await readStore(`host:${host.hostId}`);
     for (const ep of store.episodes) {
-      episodes.push({ ...ep, ownerHostId: host.hostId, ownerName: host.name });
+      episodes.push({ ...ep, ownerHostId: host.hostId, ownerName: host.name, taskCount: store.tasks.filter(t => t.episode === ep.title).length });
     }
   }
   return NextResponse.json({ episodes });

@@ -13,14 +13,17 @@ export async function POST(request: NextRequest) {
 
     let storeId: string | undefined;
     let parentFolderId: string | undefined;
-    // For a host, episodes live in their own store and nest under their own Drive folder.
-    if (session && session.role === 'host') {
-      storeId = `host:${session.hostId}`;
-      const host = await getHost(session.hostId);
+    // A host syncs their own store; an admin may target a specific host via body.hostId.
+    const targetHostId = session?.role === 'host'
+      ? session.hostId
+      : (session?.role === 'admin' && body?.hostId ? String(body.hostId) : null);
+    if (targetHostId) {
+      storeId = `host:${targetHostId}`;
+      const host = await getHost(targetHostId);
       let folderId = host?.driveFolderId;
       if (!folderId) {
-        const folder = await ensureHostDriveFolder(session.name);
-        if (folder) { folderId = folder.id; await setHostDriveFolder(session.hostId, folder.id, folder.url || ''); }
+        const folder = await ensureHostDriveFolder(host?.name || (session?.role === 'host' ? session.name : 'מנחה'));
+        if (folder) { folderId = folder.id; await setHostDriveFolder(targetHostId, folder.id, folder.url || ''); }
       }
       parentFolderId = folderId;
     }

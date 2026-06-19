@@ -290,7 +290,8 @@ export function EpisodesClient() {
   }
   function advance(id:number) { setStore(s => ({...s, episodes:s.episodes.map(e => { if(e.id!==id) return e; const i=statusFlow.indexOf(e.status); return {...e, status:statusFlow[Math.min(i+1,statusFlow.length-1)], progress:Math.min(100,e.progress+12)}; })})); }
   function setStatus(id:number, status:string){ setStore(s=>({...s, episodes:s.episodes.map(e=>e.id===id?{...e, status: status as EpisodeStatus}:e)})); }
-  async function syncEpisodeDrive(id:number){ try{ await fetch('/api/google/drive/sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({episodeId:id})}); }catch{} alert('יוצר/מסנכרן תיקיות Drive… הדף יתרענן בעוד רגע.'); setTimeout(()=>window.location.reload(),2800); }
+  async function syncEpisodeDrive(id:number, hostId?: string){ try{ await fetch('/api/google/drive/sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({episodeId:id, ...(hostId?{hostId}:{})})}); }catch{} alert('יוצר/מסנכרן תיקיות Drive… הדף יתרענן בעוד רגע.'); setTimeout(()=>window.location.reload(),2800); }
+  async function deleteHostEpisode(e: Episode){ if(!window.confirm(`למחוק לגמרי את הפרק “${e.title}” של ${e.ownerName}? הפעולה תמחק גם משימות, נכסים והזמנת צילום.`)) return; await fetch(`/api/host-episode?hostId=${encodeURIComponent(e.ownerHostId||'')}&episodeId=${e.id}`,{method:'DELETE'}); refreshHostEpisodes(); }
   async function setHostStatus(e: Episode, status: string){ await fetch('/api/host-episode',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({hostId:e.ownerHostId,episodeId:e.id,patch:{status}})}); refreshHostEpisodes(); }
   const renderRow = (e: Episode, isHost: boolean) => {
     const fv = e.driveAssetStatus?.fullVideo; const fullFolder = e.fullVideoFolderUrl || e.fullVideoUrl; const fullFile = fv?.files?.[0]?.url || fullFolder;
@@ -303,10 +304,10 @@ export function EpisodesClient() {
       <span title={e.guests}>{e.guests}</span>
       <span className="epDate">{shortDateTime(e.recording, e.recordingAt)}</span>
       <span className="epDate">{shortDateTime(e.publish)}</span>
-      <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{fv?.hasFiles && fullFile ? <a className="epAsset done" href={fullFile} target="_blank" rel="noreferrer">✓ צפה</a> : fullFolder ? <a className="epAsset todo" href={fullFolder} target="_blank" rel="noreferrer">↑ העלה</a> : (isHost ? <span className="muted">—</span> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id)}>צור</button>)}</span>
-      <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{mk ? <a className={`epAsset ${mkHas ? 'done' : 'todo'}`} href={mk} target="_blank" rel="noreferrer">{mkHas ? '✓ סרטונים' : 'סרטונים'}</a> : (isHost ? <span className="muted">—</span> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id)}>צור</button>)}</span>
-      <span className="epTasks">{isHost ? '' : taskCount(e)}</span>
-      <span onClick={ev => ev.stopPropagation()}>{isHost ? null : <button className="deleteTiny" onClick={() => deleteEpisode(e.id)} aria-label={`מחיקת ${e.title}`}>מחק</button>}</span>
+      <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{fv?.hasFiles && fullFile ? <a className="epAsset done" href={fullFile} target="_blank" rel="noreferrer">✓ צפה</a> : fullFolder ? <a className="epAsset todo" href={fullFolder} target="_blank" rel="noreferrer">↑ העלה</a> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id, isHost ? e.ownerHostId : undefined)}>צור</button>}</span>
+      <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{mk ? <a className={`epAsset ${mkHas ? 'done' : 'todo'}`} href={mk} target="_blank" rel="noreferrer">{mkHas ? '✓ סרטונים' : 'סרטונים'}</a> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id, isHost ? e.ownerHostId : undefined)}>צור</button>}</span>
+      <span className="epTasks">{isHost ? (e.taskCount ?? 0) : taskCount(e)}</span>
+      <span onClick={ev => ev.stopPropagation()}><button className="deleteTiny" onClick={() => isHost ? deleteHostEpisode(e) : deleteEpisode(e.id)} aria-label={`מחיקת ${e.title}`}>מחק</button></span>
     </div>;
   };
   async function copyExternalFormLink() {
