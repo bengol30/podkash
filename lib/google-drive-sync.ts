@@ -83,9 +83,25 @@ async function findFolder(tokens: DriveTokens, name: string, parentId?: string) 
   return result.files?.[0] || null;
 }
 
+// Make a folder public: anyone with the link can view AND upload/edit (so the whole
+// team and guests can use it without permission friction). Best-effort — never breaks sync.
+async function makeFolderPublic(tokens: DriveTokens, fileId: string) {
+  try {
+    await drive(tokens, `/files/${fileId}/permissions?fields=id`, {
+      method: 'POST',
+      body: JSON.stringify({ role: 'writer', type: 'anyone' }),
+    });
+  } catch (error) {
+    console.error('Podkash Drive: could not make folder public', fileId, error);
+  }
+}
+
 async function ensureFolder(tokens: DriveTokens, name: string, parentId?: string) {
   const existing = await findFolder(tokens, name, parentId);
-  if (existing) return { ...existing, created: false };
+  if (existing) {
+    await makeFolderPublic(tokens, existing.id);
+    return { ...existing, created: false };
+  }
   const created = await drive<DriveFile>(tokens, '/files?fields=id,name,mimeType,webViewLink', {
     method: 'POST',
     body: JSON.stringify({
@@ -94,6 +110,7 @@ async function ensureFolder(tokens: DriveTokens, name: string, parentId?: string
       ...(parentId ? { parents: [parentId] } : {}),
     }),
   });
+  await makeFolderPublic(tokens, created.id);
   return { ...created, created: true };
 }
 
