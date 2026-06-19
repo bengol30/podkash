@@ -137,6 +137,8 @@ export type StoredUser = {
   hostId: string;
   passwordHash: string;
   createdAt: string;
+  driveFolderId?: string;
+  driveFolderUrl?: string;
 };
 export type PublicUser = Omit<StoredUser, 'passwordHash'>;
 
@@ -197,6 +199,19 @@ export async function deleteHost(id: string): Promise<void> {
   const users = await getUsersRaw();
   await saveUsersRaw(users.filter(u => u.id !== id));
   // Note: the host's data row (host:<id>) is intentionally kept, not deleted.
+}
+
+export async function getHost(hostId: string): Promise<PublicUser | null> {
+  const users = await getUsersRaw();
+  const user = users.find(u => u.hostId === hostId);
+  if (!user) return null;
+  const { passwordHash, ...rest } = user;
+  return rest;
+}
+
+export async function setHostDriveFolder(hostId: string, folderId: string, folderUrl: string): Promise<void> {
+  const users = await getUsersRaw();
+  await saveUsersRaw(users.map(u => u.hostId === hostId ? { ...u, driveFolderId: folderId, driveFolderUrl: folderUrl } : u));
 }
 
 // ---- Shared studio bookings (one global pool) ----

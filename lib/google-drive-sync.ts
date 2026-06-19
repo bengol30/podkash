@@ -161,12 +161,30 @@ function updateEpisodeAssets(episode: Episode, data: {
   } satisfies Episode;
 }
 
-export async function syncGoogleDriveEpisodes(options?: { episodeId?: number }) {
+// Ensure a host's main Drive folder ("<name> מנחה פודק״ש") under the root. Best-effort.
+export async function ensureHostDriveFolder(hostName: string): Promise<{ id: string; url?: string } | null> {
+  try {
+    const rawTokens = await readGoogleDriveTokens();
+    if (!rawTokens) return null;
+    const { tokens } = await refreshIfNeeded(rawTokens);
+    const root = await ensureFolder(tokens, ROOT_FOLDER_NAME);
+    const folderName = `${hostName} מנחה פודק״ש`.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+    const hostFolder = await ensureFolder(tokens, folderName, root.id);
+    return { id: hostFolder.id, url: hostFolder.webViewLink };
+  } catch (error) {
+    console.error('Podkash Drive: ensureHostDriveFolder failed', error);
+    return null;
+  }
+}
+
+export async function syncGoogleDriveEpisodes(options?: { episodeId?: number; storeId?: string; parentFolderId?: string }) {
   const rawTokens = await readGoogleDriveTokens();
   if (!rawTokens) throw new Error('Google Drive is not connected');
   const { tokens, refreshed } = await refreshIfNeeded(rawTokens);
-  const store = await readStore();
-  const root = await ensureFolder(tokens, ROOT_FOLDER_NAME);
+  const store = await readStore(options?.storeId);
+  const root = options?.parentFolderId
+    ? { id: options.parentFolderId, name: '', webViewLink: undefined as string | undefined, created: false }
+    : await ensureFolder(tokens, ROOT_FOLDER_NAME);
   const episodes = options?.episodeId ? store.episodes.filter(ep => ep.id === options.episodeId) : store.episodes;
   const summaries: Array<{
     episodeId: number;
@@ -206,7 +224,7 @@ export async function syncGoogleDriveEpisodes(options?: { episodeId?: number }) 
   }));
 
   const nextStore: Store = { ...store, episodes: nextEpisodes };
-  await writeStore(nextStore);
+  await writeStore(nextStore, options?.storeId);
 
   return {
     ok: true,

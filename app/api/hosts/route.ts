@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { listHosts, createHost, deleteHost } from '@/lib/db';
+import { listHosts, createHost, deleteHost, setHostDriveFolder } from '@/lib/db';
+import { ensureHostDriveFolder } from '@/lib/google-drive-sync';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,10 @@ export async function POST(request: Request) {
       username: String(body.username || ''),
       password: String(body.password || ''),
     });
-    return NextResponse.json({ ok: true, host });
+    // Open the host's main Drive folder ("<name> מנחה פודק״ש"); best-effort.
+    const folder = await ensureHostDriveFolder(host.name);
+    if (folder) await setHostDriveFolder(host.hostId, folder.id, folder.url || '');
+    return NextResponse.json({ ok: true, host: { ...host, driveFolderUrl: folder?.url } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Unknown error' }, { status: 400 });
   }
