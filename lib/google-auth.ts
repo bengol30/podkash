@@ -5,8 +5,20 @@ export const GOOGLE_DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive',
 ].join(' ');
 
+export const YOUTUBE_SCOPES = [
+  'openid',
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/youtube.upload',
+  'https://www.googleapis.com/auth/youtube.readonly',
+].join(' ');
+
 export function googleRedirectUri() {
   return process.env.GOOGLE_REDIRECT_URI || 'https://podkash.vercel.app/api/google/auth/callback';
+}
+
+export function youtubeRedirectUri() {
+  return process.env.YOUTUBE_REDIRECT_URI || 'https://podkash.vercel.app/api/youtube/auth/callback';
 }
 
 export function hasGoogleConfig() {
@@ -18,4 +30,11 @@ export function googleConfig() {
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) throw new Error('Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
   return { clientId, clientSecret, redirectUri: googleRedirectUri() };
+}
+
+export function youtubeConfig() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) throw new Error('Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
+  return { clientId, clientSecret, redirectUri: youtubeRedirectUri() };
 }

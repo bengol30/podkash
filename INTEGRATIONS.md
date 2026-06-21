@@ -67,3 +67,14 @@ Recommended providers: Neon, Supabase Postgres, or Vercel Postgres.
   - optional thumbnail URL
   - TikTok title
   - AI-generated disclosure flag
+
+## YouTube (חיבור עצמאי, בלי Buffer)
+
+חיבור ישיר לערוץ היוטיוב דרך YouTube Data API v3 + Google OAuth (אותו Client ID/Secret של Drive).
+
+- Scopes: `youtube.upload` + `youtube.readonly` (נשמרים בנפרד תחת `id='youtube'` בטבלת `podkash_google_tokens`).
+- Routes: `/api/youtube/auth/start`, `/api/youtube/auth/callback`, `/api/youtube/status`, `/api/youtube/disconnect`, `/api/youtube/upload` (פותח resumable session ומחזיר `uploadUrl`; הדפדפן מעלה את הבייטים ישירות).
+- UI: רכיב `YouTubeStudio` בעמוד ההפצה — בחירת פרק, קובץ וידאו, כותרת/תיאור/תגיות/קטגוריה, פרטיות ותזמון פרסום. הקישור נשמר אוטומטית ל־`episode.youtubeUrl`.
+- תזמון: כשמוגדר `publishAt`, הסרטון עולה כ־`private` ומתפרסם אוטומטית בזמן שנקבע.
+- Google Cloud (בוצע): YouTube Data API v3 מופעל, Redirect URI נוסף, scopes נוספו ל-Data Access, test user podkashk@gmail.com קיים (מצב Testing). פרסום ציבורי דורש audit; עד אז העלאות API נשארות private/מתוזמן/unlisted.
+- אין env חדש: משתמש ב-GOOGLE_CLIENT_ID/SECRET הקיימים; YOUTUBE_REDIRECT_URI אופציונלי.
