@@ -174,23 +174,23 @@ export async function ensureGoogleTokensTable() {
   `;
 }
 
-export async function readGoogleDriveConnection(): Promise<GoogleDriveConnection | null> {
+async function readConnection(providerId: string): Promise<GoogleDriveConnection | null> {
   if (!databaseUrl && canUseSupabaseRest()) {
-    const rows = await supabaseRest<GoogleDriveConnection[]>('podkash_google_tokens?id=eq.drive&select=email,name,picture,scope,connectedAt:created_at,expiresAt:expires_at&limit=1');
+    const rows = await supabaseRest<GoogleDriveConnection[]>(`podkash_google_tokens?id=eq.${providerId}&select=email,name,picture,scope,connectedAt:created_at,expiresAt:expires_at&limit=1`);
     return rows[0] || null;
   }
   await ensureGoogleTokensTable();
   const db = sql();
   const rows = await db<GoogleDriveConnection[]>`
     select email, name, picture, scope, created_at::text as "connectedAt", expires_at::text as "expiresAt"
-    from podkash_google_tokens where id = 'drive' limit 1
+    from podkash_google_tokens where id = ${providerId} limit 1
   `;
   return rows[0] || null;
 }
 
-export async function readGoogleDriveTokens(): Promise<GoogleDriveTokens | null> {
+async function readTokens(providerId: string): Promise<GoogleDriveTokens | null> {
   if (!databaseUrl && canUseSupabaseRest()) {
-    const rows = await supabaseRest<Array<GoogleDriveConnection & { accessToken: string; refreshToken?: string; tokenType?: string }>>('podkash_google_tokens?id=eq.drive&select=accessToken:access_token,refreshToken:refresh_token,tokenType:token_type,scope,expiresAt:expires_at,email,name,picture,connectedAt:created_at&limit=1');
+    const rows = await supabaseRest<Array<GoogleDriveConnection & { accessToken: string; refreshToken?: string; tokenType?: string }>>(`podkash_google_tokens?id=eq.${providerId}&select=accessToken:access_token,refreshToken:refresh_token,tokenType:token_type,scope,expiresAt:expires_at,email,name,picture,connectedAt:created_at&limit=1`);
     const row = rows[0];
     if (!row) return null;
     return {
@@ -203,7 +203,7 @@ export async function readGoogleDriveTokens(): Promise<GoogleDriveTokens | null>
   const db = sql();
   const rows = await db<Array<GoogleDriveConnection & { accessToken: string; refreshToken?: string; tokenType?: string }>>`
     select access_token as "accessToken", refresh_token as "refreshToken", token_type as "tokenType", scope, expires_at::text as "expiresAt", email, name, picture, created_at::text as "connectedAt"
-    from podkash_google_tokens where id = 'drive' limit 1
+    from podkash_google_tokens where id = ${providerId} limit 1
   `;
   const row = rows[0];
   if (!row) return null;
@@ -214,7 +214,7 @@ export async function readGoogleDriveTokens(): Promise<GoogleDriveTokens | null>
   };
 }
 
-export async function writeGoogleDriveTokens(tokens: GoogleDriveTokens) {
+async function writeTokens(providerId: string, tokens: GoogleDriveTokens) {
   const encryptedAccess = encryptText(tokens.accessToken);
   const encryptedRefresh = tokens.refreshToken ? encryptText(tokens.refreshToken) : null;
   if (!databaseUrl && canUseSupabaseRest()) {
@@ -222,7 +222,7 @@ export async function writeGoogleDriveTokens(tokens: GoogleDriveTokens) {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({
-        id: 'drive',
+        id: providerId,
         access_token: encryptedAccess,
         refresh_token: encryptedRefresh,
         token_type: tokens.tokenType || 'Bearer',
@@ -240,7 +240,7 @@ export async function writeGoogleDriveTokens(tokens: GoogleDriveTokens) {
   const db = sql();
   await db`
     insert into podkash_google_tokens (id, access_token, refresh_token, token_type, scope, expires_at, email, name, picture, updated_at)
-    values ('drive', ${encryptedAccess}, ${encryptedRefresh}, ${tokens.tokenType || 'Bearer'}, ${tokens.scope || null}, ${tokens.expiresAt || null}, ${tokens.email || null}, ${tokens.name || null}, ${tokens.picture || null}, now())
+    values (${providerId}, ${encryptedAccess}, ${encryptedRefresh}, ${tokens.tokenType || 'Bearer'}, ${tokens.scope || null}, ${tokens.expiresAt || null}, ${tokens.email || null}, ${tokens.name || null}, ${tokens.picture || null}, now())
     on conflict (id) do update set
       access_token = excluded.access_token,
       refresh_token = coalesce(excluded.refresh_token, podkash_google_tokens.refresh_token),
@@ -254,12 +254,25 @@ export async function writeGoogleDriveTokens(tokens: GoogleDriveTokens) {
   `;
 }
 
-export async function deleteGoogleDriveTokens() {
+async function deleteTokens(providerId: string) {
   if (!databaseUrl && canUseSupabaseRest()) {
-    await supabaseRest('podkash_google_tokens?id=eq.drive', { method: 'DELETE' });
+    await supabaseRest(`podkash_google_tokens?id=eq.${providerId}`, { method: 'DELETE' });
     return;
   }
   await ensureGoogleTokensTable();
   const db = sql();
-  await db`delete from podkash_google_tokens where id = 'drive'`;
+  await db`delete from podkash_google_tokens where id = ${providerId}`;
 }
+
+export const readGoogleDriveConnection = () => readConnection('drive');
+export const readGoogleDriveTokens = () => readTokens('drive');
+export const writeGoogleDriveTokens = (tokens: GoogleDriveTokens) => writeTokens('drive', tokens);
+export const deleteGoogleDriveTokens = () => deleteTokens('drive');
+
+export type YouTubeConnection = GoogleDriveConnection;
+export type YouTubeTokens = GoogleDriveTokens;
+
+export const readYouTubeConnection = () => readConnection('youtube');
+export const readYouTubeTokens = () => readTokens('youtube');
+export const writeYouTubeTokens = (tokens: YouTubeTokens) => writeTokens('youtube', tokens);
+export const deleteYouTubeTokens = () => deleteTokens('youtube');

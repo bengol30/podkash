@@ -67,3 +67,27 @@ Recommended providers: Neon, Supabase Postgres, or Vercel Postgres.
   - optional thumbnail URL
   - TikTok title
   - AI-generated disclosure flag
+
+## YouTube (חיבור עצמאי, בלי Buffer)
+
+חיבור ישיר לערוץ היוטיוב דרך YouTube Data API v3 + Google OAuth (אותו Client ID/Secret של Drive).
+
+- Scopes: `youtube.upload` + `youtube.readonly` (נשמרים בנפרד תחת `id='youtube'` בטבלת `podkash_google_tokens`).
+- Routes:
+  - `GET /api/youtube/auth/start` — התחלת OAuth לערוץ.
+  - `GET /api/youtube/auth/callback` — החלפת code, שליפת פרטי ערוץ, שמירת טוקנים מוצפנים.
+  - `GET /api/youtube/status` — סטטוס חיבור + פרטי ערוץ + סרטונים אחרונים.
+  - `POST /api/youtube/disconnect` — ניתוק.
+  - `POST /api/youtube/upload` — פותח resumable upload session ומחזיר `uploadUrl`. הדפדפן מעלה את הבייטים ישירות ל־`uploadUrl` (כדי לא להעמיס על Vercel).
+- UI: רכיב `YouTubeStudio` בעמוד ההפצה — בחירת פרק, קובץ וידאו, כותרת/תיאור/תגיות/קטגוריה, פרטיות ותזמון פרסום. הקישור נשמר אוטומטית ל־`episode.youtubeUrl`.
+- תזמון: כשמוגדר `publishAt`, הסרטון עולה כ־`private` ומתפרסם אוטומטית בזמן שנקבע.
+
+### דרוש הגדרה ב־Google Cloud (חד־פעמי)
+
+1. להפעיל **YouTube Data API v3** באותו פרויקט.
+2. להוסיף Redirect URI: `https://podkash.vercel.app/api/youtube/auth/callback` ל־OAuth Client.
+3. במסך ההסכמה (OAuth consent) להוסיף את ה־scopes של YouTube.
+4. לפרסום סרטונים **ציבוריים** דרך ה־API צריך לעבור **YouTube API audit** של גוגל. עד אז כל העלאה דרך ה־API נשארת `private` (תזמון ופרטי/לא־רשום עובדים מיד).
+5. מכסה (quota) ברירת מחדל: ~6 העלאות ביום. להגדלה — בקשה מגוגל.
+
+env אופציונלי: `YOUTUBE_REDIRECT_URI` (ברירת מחדל: `https://podkash.vercel.app/api/youtube/auth/callback`).
