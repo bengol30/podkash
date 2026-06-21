@@ -59,6 +59,14 @@ async function refreshIfNeeded(tokens: GoogleDriveTokens): Promise<{ tokens: Dri
   return { tokens: nextTokens, refreshed: true };
 }
 
+/** Returns a fresh Google Drive access token, refreshing and persisting if needed. */
+export async function getValidDriveAccessToken(): Promise<string> {
+  const raw = await readGoogleDriveTokens();
+  if (!raw) throw new Error('Google Drive is not connected');
+  const { tokens } = await refreshIfNeeded(raw);
+  return tokens.accessToken;
+}
+
 async function drive<T>(tokens: DriveTokens, path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
     ...init,
