@@ -10,7 +10,9 @@ export const YOUTUBE_SCOPES = [
   'email',
   'profile',
   'https://www.googleapis.com/auth/youtube.upload',
-  'https://www.googleapis.com/auth/youtube.readonly',
+  // force-ssl grants full read + manage (edit metadata, set privacy, delete,
+  // set thumbnails) — a superset of youtube.readonly.
+  'https://www.googleapis.com/auth/youtube.force-ssl',
 ].join(' ');
 
 export function googleRedirectUri() {

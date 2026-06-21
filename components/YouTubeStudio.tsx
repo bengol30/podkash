@@ -33,6 +33,22 @@ type YouTubeStatus = {
   channelError?: string;
 };
 
+type ManagedVideo = {
+  id: string;
+  title: string;
+  description: string;
+  tags: string[];
+  categoryId: string;
+  privacyStatus: string;
+  publishAt?: string;
+  thumbnail?: string;
+  publishedAt?: string;
+  viewCount?: string;
+  url: string;
+};
+
+const PRIVACY_LABELS: Record<string, string> = { public: 'ציבורי', unlisted: 'לא רשום', private: 'פרטי' };
+
 const CATEGORIES: Array<{ id: string; label: string }> = [
   { id: '22', label: 'אנשים ובלוגים' },
   { id: '24', label: 'בידור' },
@@ -46,6 +62,14 @@ function defaultDescription(ep?: Episode) {
   if (!ep) return '';
   const lines = [ep.topic ? ep.topic : '', '', `מנחה: ${ep.host || ''}`, ep.guests && ep.guests !== '—' ? `אורחים: ${ep.guests}` : ''];
   return lines.filter(Boolean).join('\n');
+}
+
+// ISO → value for <input type="datetime-local"> in the viewer's local time.
+function toLocalInput(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; onUploaded?: (episodeId: number, url: string) => void }) {
@@ -67,6 +91,18 @@ export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; o
   const [progress, setProgress] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Video management (edit / delete).
+  const [videos, setVideos] = useState<ManagedVideo[]>([]);
+  const [videosLoading, setVideosLoading] = useState(false);
+  const [editing, setEditing] = useState<ManagedVideo | null>(null);
+  const [working, setWorking] = useState(false);
+  const [eTitle, setETitle] = useState('');
+  const [eDescription, setEDescription] = useState('');
+  const [eTags, setETags] = useState('');
+  const [eCategory, setECategory] = useState('22');
+  const [ePrivacy, setEPrivacy] = useState('private');
+  const [ePublishAt, setEPublishAt] = useState('');
+
   const episode = episodes.find(e => String(e.id) === episodeId);
   const scheduled = Boolean(publishAt);
 
@@ -76,11 +112,83 @@ export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; o
       const res = await fetch('/api/youtube/status', { cache: 'no-store' });
       const data = await res.json();
       setStatus(data);
+      if (data?.connected) loadVideos();
     } catch (error) {
       setStatus({ configured: false, connected: false, redirectUri: 'https://podkash.vercel.app/api/youtube/auth/callback' });
       setNotice(error instanceof Error ? error.message : 'שגיאה בבדיקת YouTube');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadVideos() {
+    setVideosLoading(true);
+    try {
+      const res = await fetch('/api/youtube/videos', { cache: 'no-store' });
+      const data = await res.json();
+      if (res.ok && data.ok) setVideos(data.videos || []);
+      else setNotice(data.message || 'טעינת הסרטונים לניהול נכשלה');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'טעינת הסרטונים נכשלה');
+    } finally {
+      setVideosLoading(false);
+    }
+  }
+
+  function openEdit(v: ManagedVideo) {
+    setEditing(v);
+    setETitle(v.title);
+    setEDescription(v.description);
+    setETags(v.tags.join(', '));
+    setECategory(v.categoryId || '22');
+    setEPrivacy(v.privacyStatus || 'private');
+    setEPublishAt(v.publishAt ? toLocalInput(v.publishAt) : '');
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    setWorking(true);
+    setNotice('');
+    try {
+      const res = await fetch('/api/youtube/videos', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: editing.id,
+          title: eTitle,
+          description: eDescription,
+          tags: eTags,
+          categoryId: eCategory,
+          privacyStatus: ePrivacy,
+          publishAt: ePublishAt ? new Date(ePublishAt).toISOString() : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.message || 'העריכה נכשלה');
+      setNotice('הסרטון עודכן בהצלחה.');
+      setEditing(null);
+      loadVideos();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'העריכה נכשלה');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function removeVideo(v: ManagedVideo) {
+    if (!window.confirm(`למחוק לצמיתות את הסרטון “${v.title || v.id}” מ־YouTube? אי אפשר לשחזר.`)) return;
+    setWorking(true);
+    setNotice('');
+    try {
+      const res = await fetch(`/api/youtube/videos?id=${encodeURIComponent(v.id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.message || 'המחיקה נכשלה');
+      setNotice('הסרטון נמחק מ־YouTube.');
+      setVideos(prev => prev.filter(x => x.id !== v.id));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'המחיקה נכשלה');
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -316,21 +424,70 @@ export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; o
         </div>
       ) : null}
 
-      {connected && status?.recentUploads?.length ? (
+      {connected ? (
         <>
-          <h3 style={{ marginTop: 18 }}>הסרטונים האחרונים בערוץ</h3>
-          <div className="list">
-            {status.recentUploads.map(v => (
-              <a className="row click" key={v.id} href={v.url} target="_blank" rel="noreferrer">
-                <span><b>{v.title}</b><br /><small className="muted">{cleanDateTime(v.publishedAt)}{v.privacyStatus ? ` · ${v.privacyStatus}` : ''}</small></span>
-                <span className="pill green">פתח</span>
-              </a>
-            ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 18 }}>
+            <h3 style={{ margin: 0 }}>ניהול סרטוני הערוץ</h3>
+            <button className="miniBtn" type="button" onClick={loadVideos} disabled={videosLoading}>{videosLoading ? 'טוען…' : 'רענון'}</button>
           </div>
+          {videos.length ? (
+            <div className="list">
+              {videos.map(v => (
+                <div className="row" key={v.id}>
+                  <span>
+                    <b>{v.title || '(ללא כותרת)'}</b><br />
+                    <small className="muted">
+                      {cleanDateTime(v.publishedAt)} · {PRIVACY_LABELS[v.privacyStatus] || v.privacyStatus}
+                      {v.publishAt ? ` · מתוזמן ל־${cleanDateTime(v.publishAt)}` : ''}
+                      {v.viewCount ? ` · ${Number(v.viewCount).toLocaleString('he-IL')} צפיות` : ''}
+                    </small>
+                  </span>
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'end' }}>
+                    <a className="pill green" href={v.url} target="_blank" rel="noreferrer">פתח</a>
+                    <button className="pill blue" type="button" onClick={() => openEdit(v)} disabled={working}>עריכה</button>
+                    <button className="pill red" type="button" onClick={() => removeVideo(v)} disabled={working}>מחיקה</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : <p className="muted" style={{ marginTop: 10 }}>{videosLoading ? 'טוען סרטונים…' : 'אין סרטונים בערוץ עדיין.'}</p>}
         </>
       ) : null}
 
       {notice ? <p className="muted" style={{ marginTop: 14, whiteSpace: 'pre-wrap' }} role="status" aria-live="polite">{notice}</p> : null}
+
+      {editing ? (
+        <div className="modalOverlay" onMouseDown={() => !working && setEditing(null)}>
+          <section className="modal" onMouseDown={e => e.stopPropagation()}>
+            <div className="modalHead">
+              <div><p className="eyebrow">YouTube</p><h2>עריכת סרטון</h2><p>{editing.id}</p></div>
+              <button className="closeBtn" onClick={() => setEditing(null)}>×</button>
+            </div>
+            <div className="smartForm">
+              <label className="formRow wide"><span>כותרת</span><input value={eTitle} onChange={e => setETitle(e.target.value)} maxLength={100} /></label>
+              <label className="formRow"><span>קטגוריה</span>
+                <select value={eCategory} onChange={e => setECategory(e.target.value)}>
+                  {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              </label>
+              <label className="formRow"><span>פרטיות</span>
+                <select value={ePrivacy} onChange={e => setEPrivacy(e.target.value)} disabled={Boolean(ePublishAt)}>
+                  <option value="private">פרטי</option>
+                  <option value="unlisted">לא רשום</option>
+                  <option value="public">ציבורי</option>
+                </select>
+              </label>
+              <label className="formRow"><span>תזמון פרסום</span><input type="datetime-local" value={ePublishAt} onChange={e => setEPublishAt(e.target.value)} /></label>
+              <label className="formRow wide"><span>תגיות (מופרדות בפסיק)</span><input value={eTags} onChange={e => setETags(e.target.value)} /></label>
+              <label className="formRow wide"><span>תיאור</span><textarea rows={5} value={eDescription} onChange={e => setEDescription(e.target.value)} maxLength={5000} /></label>
+              <div className="formActions">
+                <button className="btn light" type="button" onClick={() => setEditing(null)} disabled={working}>ביטול</button>
+                <button className="btn gold" type="button" onClick={saveEdit} disabled={working || !eTitle.trim()}>{working ? 'שומר…' : 'שמירת שינויים'}</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }
