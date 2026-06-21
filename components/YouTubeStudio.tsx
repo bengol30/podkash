@@ -48,7 +48,7 @@ function defaultDescription(ep?: Episode) {
   return lines.filter(Boolean).join('\n');
 }
 
-export function YouTubeStudio({ episodes }: { episodes: Episode[] }) {
+export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; onUploaded?: (episodeId: number, url: string) => void }) {
   const [status, setStatus] = useState<YouTubeStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
@@ -106,21 +106,6 @@ export function YouTubeStudio({ episodes }: { episodes: Episode[] }) {
     loadStatus();
   }
 
-  async function persistEpisodeUrl(videoUrl: string) {
-    if (!episode) return;
-    try {
-      const res = await fetch('/api/store', { cache: 'no-store' });
-      if (!res.ok) return;
-      const store = await res.json();
-      const next = {
-        ...store,
-        episodes: (store.episodes || []).map((e: Episode) => e.id === episode.id ? { ...e, youtubeUrl: videoUrl } : e),
-      };
-      await fetch('/api/store', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(next) });
-    } catch {
-      // Non-fatal: the video uploaded fine even if we couldn't save the link.
-    }
-  }
 
   async function startUpload() {
     if (!file) { setNotice('צריך לבחור קובץ וידאו'); return; }
@@ -194,7 +179,9 @@ export function YouTubeStudio({ episodes }: { episodes: Episode[] }) {
       });
 
       const videoUrl = video.id ? `https://www.youtube.com/watch?v=${video.id}` : '';
-      if (videoUrl) await persistEpisodeUrl(videoUrl);
+      // Save the link through the parent store (single writer) so the page's
+      // autosave persists it — a separate PUT here races with that autosave.
+      if (videoUrl && episode) onUploaded?.(episode.id, videoUrl);
       setNotice(scheduled
         ? `הסרטון הועלה ותוזמן לפרסום. ${videoUrl ? `קישור: ${videoUrl}` : ''}`
         : `הסרטון הועלה בהצלחה. ${videoUrl ? `קישור: ${videoUrl}` : ''}`);
