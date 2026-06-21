@@ -179,9 +179,17 @@ export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; o
       });
 
       const videoUrl = video.id ? `https://www.youtube.com/watch?v=${video.id}` : '';
-      // Save the link through the parent store (single writer) so the page's
-      // autosave persists it — a separate PUT here races with that autosave.
-      if (videoUrl && episode) onUploaded?.(episode.id, videoUrl);
+      if (videoUrl && episode) {
+        // Persist authoritatively on the server (the page's debounced full-store
+        // autosave would otherwise clobber a client-only write), and mirror it
+        // into the in-memory store so the UI and any later autosave stay in sync.
+        onUploaded?.(episode.id, videoUrl);
+        await fetch('/api/youtube/episode-link', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ episodeId: episode.id, url: videoUrl }),
+        }).catch(() => {});
+      }
       setNotice(scheduled
         ? `הסרטון הועלה ותוזמן לפרסום. ${videoUrl ? `קישור: ${videoUrl}` : ''}`
         : `הסרטון הועלה בהצלחה. ${videoUrl ? `קישור: ${videoUrl}` : ''}`);
