@@ -136,27 +136,50 @@ export function YouTubeStudio({ episodes }: { episodes: Episode[] }) {
     setProgress(0);
     setNotice('');
     try {
-      const initRes = await fetch('/api/youtube/upload', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(),
-          description,
-          tags,
-          categoryId,
-          privacyStatus: privacy,
-          publishAt: scheduled ? new Date(publishAt).toISOString() : null,
-          madeForKids,
-          fileSize: file.size,
-          contentType: file.type || 'video/*',
-        }),
-      });
-      const initData = await initRes.json();
-      if (!initRes.ok || !initData.ok) throw new Error(initData.message || 'פתיחת ההעלאה נכשלה');
+      // 1. Get a short-lived access token from our server (admin-guarded).
+      const tokRes = await fetch('/api/youtube/upload', { method: 'POST' });
+      const tokData = await tokRes.json();
+      if (!tokRes.ok || !tokData.ok) throw new Error(tokData.message || 'קבלת הרשאת העלאה נכשלה');
 
+      // 2. Build the video metadata (YouTube forces private when publishAt is set).
+      const tagList = tags.split(',').map(t => t.trim()).filter(Boolean);
+      const metadata = {
+        snippet: {
+          title: title.trim().slice(0, 100),
+          description: description.slice(0, 5000),
+          tags: tagList.length ? tagList : undefined,
+          categoryId,
+        },
+        status: {
+          privacyStatus: scheduled ? 'private' : privacy,
+          publishAt: scheduled ? new Date(publishAt).toISOString() : undefined,
+          selfDeclaredMadeForKids: madeForKids,
+        },
+      };
+
+      // 3. Initiate the resumable session FROM THE BROWSER so Google enables CORS
+      //    (a server-initiated session has no Access-Control-Allow-Origin header).
+      const initRes = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${tokData.accessToken}`,
+          'content-type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Length': String(file.size),
+          'X-Upload-Content-Type': file.type || 'video/*',
+        },
+        body: JSON.stringify(metadata),
+      });
+      if (!initRes.ok) {
+        const j = await initRes.json().catch(() => ({}));
+        throw new Error(j?.error?.message || `פתיחת ההעלאה נכשלה (${initRes.status})`);
+      }
+      const uploadUrl = initRes.headers.get('location');
+      if (!uploadUrl) throw new Error('לא התקבל קישור העלאה מ־YouTube');
+
+      // 4. Upload the bytes directly to the session URL with progress.
       const video = await new Promise<{ id?: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('PUT', initData.uploadUrl, true);
+        xhr.open('PUT', uploadUrl, true);
         xhr.setRequestHeader('Content-Type', file.type || 'video/*');
         xhr.upload.onprogress = e => { if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100)); };
         xhr.onload = () => {

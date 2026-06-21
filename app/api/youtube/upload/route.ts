@@ -1,66 +1,22 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getValidYouTubeAccess, initResumableUpload, type YouTubePrivacy } from '@/lib/youtube';
+import { NextResponse } from 'next/server';
+import { getValidYouTubeAccess } from '@/lib/youtube';
 
 export const dynamic = 'force-dynamic';
 
-type UploadBody = {
-  title?: string;
-  description?: string;
-  tags?: string[] | string;
-  categoryId?: string;
-  privacyStatus?: YouTubePrivacy;
-  publishAt?: string | null;
-  madeForKids?: boolean;
-  fileSize?: number;
-  contentType?: string;
-};
-
-export async function POST(request: NextRequest) {
-  let body: UploadBody;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, message: 'Invalid JSON body' }, { status: 400 });
-  }
-
-  const title = (body.title || '').trim();
-  if (!title) return NextResponse.json({ ok: false, message: 'חסר כותרת לסרטון' }, { status: 400 });
-
-  const fileSize = Number(body.fileSize || 0);
-  if (!fileSize || fileSize < 1) return NextResponse.json({ ok: false, message: 'חסר קובץ וידאו תקין' }, { status: 400 });
-
-  const tags = Array.isArray(body.tags)
-    ? body.tags
-    : typeof body.tags === 'string'
-      ? body.tags.split(',').map(t => t.trim()).filter(Boolean)
-      : undefined;
-
-  let publishAt: string | undefined;
-  if (body.publishAt) {
-    const date = new Date(body.publishAt);
-    if (Number.isNaN(date.getTime())) return NextResponse.json({ ok: false, message: 'תאריך תזמון לא תקין' }, { status: 400 });
-    if (date.getTime() < Date.now()) return NextResponse.json({ ok: false, message: 'זמן התזמון חייב להיות בעתיד' }, { status: 400 });
-    publishAt = date.toISOString();
-  }
-
+/**
+ * Returns a short-lived YouTube access token so the browser can run the
+ * resumable upload directly against Google. A session initiated server-side
+ * has no CORS headers, so the browser PUT is blocked — initiating from the
+ * browser (with its Origin) is what makes Google enable CORS. Admin-only
+ * (guarded by middleware); the token is scoped to youtube.upload/readonly
+ * and expires within the hour.
+ */
+export async function POST() {
   try {
     const tokens = await getValidYouTubeAccess();
-    const { uploadUrl } = await initResumableUpload(
-      tokens.accessToken,
-      {
-        title,
-        description: body.description,
-        tags,
-        categoryId: body.categoryId,
-        privacyStatus: body.privacyStatus || 'private',
-        publishAt,
-        madeForKids: body.madeForKids,
-      },
-      { size: fileSize, contentType: body.contentType || 'video/*' },
-    );
-    return NextResponse.json({ ok: true, uploadUrl, scheduled: Boolean(publishAt) });
+    return NextResponse.json({ ok: true, accessToken: tokens.accessToken, expiresAt: tokens.expiresAt });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'YouTube upload init failed';
+    const message = error instanceof Error ? error.message : 'YouTube token failed';
     const status = message === 'YouTube is not connected' ? 409 : 502;
     return NextResponse.json({ ok: false, message }, { status });
   }
