@@ -93,6 +93,19 @@ export function YouTubeStudio({ episodes, onUploaded }: { episodes: Episode[]; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodeId]);
 
+  // The parent store starts as demo seed data and is replaced once the real
+  // episodes load from the DB. Re-point the selection (and its title/desc) at a
+  // real episode whenever the current id no longer exists in the list.
+  useEffect(() => {
+    if (!episodes.length) return;
+    if (episodes.some(e => String(e.id) === episodeId)) return;
+    const first = episodes[0];
+    setEpisodeId(String(first.id));
+    setTitle(`#${first.number} · ${first.title}`);
+    setDescription(defaultDescription(first));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episodes]);
+
   function chooseEpisode(id: string) {
     setEpisodeId(id);
     const ep = episodes.find(e => String(e.id) === id);
