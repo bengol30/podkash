@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Dispatch, FormEvent, SetStateAction, useEffect, useRef, useState } from 'react';
 import { type EpisodeStatus } from '@/lib/data';
-import { seedStore as seed, type Application, type Booking, type Episode, type Person, type Session, type Store } from '@/lib/store-types';
+import { seedStore as seed, type Application, type Booking, type Episode, type MarketingAudioSyncJob, type Person, type PodcastEpisode, type PodcastPublishStatus, type Session, type Store } from '@/lib/store-types';
 import { cleanDateTime, formatDateTimeInput, formatDateTimeRange } from '@/lib/time';
 import { YouTubeStudio } from './YouTubeStudio';
 
@@ -99,12 +99,14 @@ function normalizeStore(input: Partial<Store> | null | undefined): Store {
     messages: Array.isArray(source.messages) ? source.messages : seed.messages,
     platforms: Array.isArray(source.platforms) ? source.platforms : seed.platforms,
     applications: Array.isArray(source.applications) ? source.applications : seed.applications,
+    podcastEpisodes: Array.isArray(source.podcastEpisodes) ? source.podcastEpisodes : seed.podcastEpisodes,
     sessions: Array.isArray(source.sessions) ? source.sessions.map((ss, i) => {
       const fallback = seed.sessions[i % seed.sessions.length];
       const rawEpisode = ss?.episode || fallback?.episode || episodes[0];
       const episode = byTitle.get(rawEpisode.title) || episodes.find(e => e.id === rawEpisode.id) || episodes[0];
       return { ...fallback, ...ss, episode, confirmations: Array.isArray(ss?.confirmations) ? ss.confirmations : [], missing: Array.isArray(ss?.missing) ? ss.missing : [] };
     }) : seed.sessions,
+    marketingAudioSyncJobs: Array.isArray(source.marketingAudioSyncJobs) ? source.marketingAudioSyncJobs : [],
   };
 }
 
@@ -177,9 +179,20 @@ function TextArea({ label, name, required=false }: { label:string; name:string; 
 
 export function DashboardClient() {
   const [store, setStore] = useStore();
+  const [audioSyncSummary, setAudioSyncSummary] = useState<MarketingAudioSyncJob | null>(null);
   const urgent = store.episodes.filter(e => e.urgent);
   const open = store.tasks.filter(t => t.status !== 'בוצע');
   const today = open.filter(t => t.due === 'היום');
+  const unreadAudioSyncJob = (store.marketingAudioSyncJobs || []).find(job => job.unread && (job.status === 'completed' || job.status === 'failed'));
+  useEffect(() => {
+    if (unreadAudioSyncJob && !audioSyncSummary) setAudioSyncSummary(unreadAudioSyncJob);
+  }, [unreadAudioSyncJob, audioSyncSummary]);
+  async function acknowledgeDashboardAudioSummary(job: MarketingAudioSyncJob) {
+    setAudioSyncSummary(null);
+    await fetch(`/api/marketing-audio-sync/${job.id}/read`, { method: 'POST' }).catch(() => undefined);
+    const storeRes = await fetch('/api/store', { cache: 'no-store' }).catch(() => null);
+    if (storeRes?.ok) setStore(normalizeStore(await storeRes.json()));
+  }
   return <>
     <AssignApplicationsPrompt store={store} setStore={setStore} />
     <Head eyebrow="סקירה יומית" title="מה צריך לקרות עכשיו?" subtitle="דשבורד קצר שמראה צילומים קרובים, פרקים תקועים, משימות דחופות והפצה שמחכה לטיפול.">
@@ -189,6 +202,7 @@ export function DashboardClient() {
     <section className="grid two"><div className="panel dark"><h2>מוקדי תשומת לב</h2><div className="list">{urgent.length ? urgent.map(e=><div className="row" key={e.id}><div><h3>{e.title}</h3><p>{e.status} · {cleanDateTime(e.recording)} · {e.tasks} משימות פתוחות</p><div className="progress"><span style={{width:e.progress+'%'}}/></div></div><span className="pill red">דחוף</span></div>) : <p className="muted">אין כרגע פרקים שסומנו כדחופים.</p>}</div></div>
     <div className="panel"><h2>משימות היום</h2><div className="list">{today.length ? today.map(t=><div className="row" key={t.title}><div><h3>{t.title}</h3><p>{t.episode}<br/>{t.owner} · {cleanDateTime(t.due)}</p></div><span className="pill">{t.type}</span></div>) : <p className="muted">אין משימות שמסומנות להיום.</p>}</div></div></section>
     <section className="grid three" style={{marginTop:16}}><div className="panel"><h3>תהליך פרק</h3><p className="muted">רעיון → תוכן → תיאום → צילום → עריכה → אישור → הפצה.</p></div><div className="panel"><h3>וואטסאפ</h3><p className="muted">ב־MVP הודעות מוכנות להעתקה ואישור אנושי, בלי אוטומציה מסוכנת לקבוצות.</p></div><div className="panel"><h3>הפצה</h3><p className="muted">מעקב לפי פלטפורמה: נכסים, טקסט, סטטוס ולינק אחרי פרסום.</p></div></section>
+    {audioSyncSummary && <Modal title="סיכום סאונד וכתוביות" subtitle={`פרק: ${audioSyncSummary.episodeTitle}`} onClose={()=>acknowledgeDashboardAudioSummary(audioSyncSummary)}><div className="summaryBox"><pre>{audioSyncSummary.summaryHebrew || audioSyncSummary.error || 'אין עדיין סיכום.'}</pre>{audioSyncSummary.outputFolderUrl ? <a className="btn gold" href={audioSyncSummary.outputFolderUrl} target="_blank" rel="noreferrer">פתיחת תיקיית התוצאות בדרייב</a> : null}<div className="formActions"><button className="btn light" type="button" onClick={()=>acknowledgeDashboardAudioSummary(audioSyncSummary)}>סגירה וסימון כנקרא</button></div></div></Modal>}
   </>;
 }
 
@@ -362,7 +376,28 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
   const [briefOpen, setBriefOpen] = useState(false);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [syncingDrive, setSyncingDrive] = useState(false);
+  const [startingAudioSync, setStartingAudioSync] = useState(false);
+  const [jobSummaryOpen, setJobSummaryOpen] = useState<MarketingAudioSyncJob | null>(null);
   const episode = store.episodes.find(e => String(e.id) === id);
+  const audioSyncJobs = episode ? (store.marketingAudioSyncJobs || []).filter(job => job.episodeId === episode.id) : [];
+  const latestAudioSyncJob = audioSyncJobs[0];
+  const unreadAudioSyncJob = audioSyncJobs.find(job => job.unread && (job.status === 'completed' || job.status === 'failed'));
+
+  async function refreshStoreFromServer() {
+    const storeRes = await fetch('/api/store', { cache: 'no-store' });
+    if (storeRes.ok) setStore(normalizeStore(await storeRes.json()));
+  }
+
+  useEffect(() => {
+    if (unreadAudioSyncJob && !jobSummaryOpen) setJobSummaryOpen(unreadAudioSyncJob);
+  }, [unreadAudioSyncJob, jobSummaryOpen]);
+
+  useEffect(() => {
+    if (!latestAudioSyncJob || !['queued','running'].includes(latestAudioSyncJob.status)) return;
+    const timer = window.setInterval(() => { refreshStoreFromServer().catch(error => console.error('Audio sync status refresh failed', error)); }, 8000);
+    return () => window.clearInterval(timer);
+  }, [latestAudioSyncJob?.id, latestAudioSyncJob?.status]);
+
   if (!episode) {
     return <>
       <Head eyebrow="פרק" title="הפרק לא נמצא" subtitle="כנראה שהפרק נמחק או שהקישור כבר לא קיים במכשיר הזה."><Link className="btn dark" href="/episodes">חזרה לרשימת הפרקים</Link></Head>
@@ -448,6 +483,40 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
     }
   }
 
+  async function startMarketingAudioSync() {
+    if (!ep.driveMarketingFolderUrl && !ep.shortsDriveFolderUrl) {
+      window.alert('חסרה תיקיית סרטוני שיווק. קודם צריך סנכרון Drive או להוסיף קישור ידנית.');
+      return;
+    }
+    if (!ep.fullAudioFolderUrl) {
+      window.alert('חסרה תיקיית קובץ שמע מלא. קודם צריך סנכרון Drive או להוסיף קישור ידנית.');
+      return;
+    }
+    if (!window.confirm('להתחיל תהליך מקומי שמוריד את סרטוני השיווק ואת קובץ האודיו הרשמי, מסנכרן ומעלה חזרה ל־Drive? אפשר לצאת מהעמוד ולחזור אחר כך.')) return;
+    setStartingAudioSync(true);
+    try {
+      const res = await fetch(`/api/episodes/${ep.id}/marketing-audio-sync`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || 'הפעלת סנכרון סאונד וכתוביות נכשלה');
+      await refreshStoreFromServer();
+      window.alert('התחלתי לסנכרן סאונד ברקע. אפשר לצאת ולחזור — הסיכום יקפוץ כשיהיו תוצאות.');
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'הפעלת סנכרון סאונד וכתוביות נכשלה');
+    } finally {
+      setStartingAudioSync(false);
+    }
+  }
+
+  async function acknowledgeAudioSyncJob(job: MarketingAudioSyncJob) {
+    setJobSummaryOpen(null);
+    try {
+      await fetch(`/api/marketing-audio-sync/${job.id}/read`, { method: 'POST' });
+      await refreshStoreFromServer();
+    } catch (error) {
+      console.error('Failed to mark audio sync summary read', error);
+    }
+  }
+
   function assetStatusPill(status?: { fileCount?: number; hasFiles?: boolean }) {
     if (!status) return null;
     return <span className={status.hasFiles ? 'pill green' : 'pill red'}>{status.hasFiles ? `${status.fileCount} קבצים` : 'אין קבצים'}</span>;
@@ -487,7 +556,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
     <section className="grid three" style={{marginTop:16}}>
       <div className="panel"><h2>תיאום</h2><p className="muted">{ep.coordinationNote || 'אין עדיין הערות תיאום לפרק הזה.'}</p>{sessions.length ? sessions.map((ss,i)=><div className="row" key={i}><span>{ss.studio}</span><span className="pill">{cleanDateTime(ss.time)}</span></div>) : <Link className="btn light" href="/production">קבע סשן צילום</Link>}</div>
       <div className="panel"><h2>משימות</h2><div className="list">{episodeTasks.length ? episodeTasks.map((t,i)=><button className="row click" key={`${t.title}-${i}`} onClick={()=>toggleTask(i)}><span>{t.title}<br/><small className="muted">{t.owner} · {t.type}</small></span><span className={t.status==='בוצע'?'pill green':'pill red'}>{t.status} · {cleanDateTime(t.due)}</span></button>) : <p className="muted">אין עדיין משימות לפרק. אפשר להוסיף מכאן.</p>}</div></div>
-      <div className="panel"><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'start',marginBottom:10}}><div><h2>נכסים</h2><p className="muted">כל הקישורים החשובים של הפרק במקום אחד: Drive, YouTube, Spotify וקליפים להפצה.</p>{ep.driveAssetsSyncedAt ? <p className="muted">סונכרן מול Drive: {cleanDateTime(ep.driveAssetsSyncedAt)}</p> : null}</div><button className="miniBtn" onClick={()=>setAssetsOpen(true)}>עריכת נכסים</button></div><div className="list">{assetLinks.map(asset=>asset.value ? <a className="row click assetLinkRow" key={asset.key} href={asset.value} target="_blank" rel="noreferrer"><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'end'}}>{assetStatusPill(asset.status)}<span className="pill green">פתח</span></span></a> : <button className="row click assetLinkRow" key={asset.key} onClick={()=>setAssetsOpen(true)}><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span className="pill red">להוסיף</span></button>)}</div>{ep.assetsNote ? <p className="muted" style={{margin:'14px 0 0'}}>{ep.assetsNote}</p> : null}</div>
+      <div className="panel"><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'start',marginBottom:10}}><div><h2>נכסים</h2><p className="muted">כל הקישורים החשובים של הפרק במקום אחד: Drive, YouTube, Spotify וקליפים להפצה.</p>{ep.driveAssetsSyncedAt ? <p className="muted">סונכרן מול Drive: {cleanDateTime(ep.driveAssetsSyncedAt)}</p> : null}</div><button className="miniBtn" onClick={()=>setAssetsOpen(true)}>עריכת נכסים</button></div><div className="audioSyncBox"><div><b>סאונד וכתוביות לסרטוני שיווק</b><p className="muted">מוריד את סרטוני השיווק ואת האודיו הרשמי, מסנכרן לפי הסאונד המקורי, מתמלל ב־OpenAI, צורב כתוביות ומעלה לתיקייה “סרטונים ערוכים עם סאונד וכתוביות”.</p>{latestAudioSyncJob ? <small className="muted">סטטוס אחרון: {latestAudioSyncJob.status === 'running' ? 'רץ עכשיו' : latestAudioSyncJob.status === 'queued' ? 'בתור' : latestAudioSyncJob.status === 'completed' ? 'הסתיים בהצלחה' : 'הסתיים עם שגיאות'}{latestAudioSyncJob.finishedAt ? ` · ${cleanDateTime(latestAudioSyncJob.finishedAt)}` : ''}</small> : null}</div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'end'}}><button className="btn gold" onClick={startMarketingAudioSync} disabled={startingAudioSync || latestAudioSyncJob?.status === 'running' || latestAudioSyncJob?.status === 'queued'}>{startingAudioSync ? 'מפעיל…' : 'חיבור סאונד וכתוביות'}</button>{latestAudioSyncJob?.summaryHebrew ? <button className="btn light" onClick={()=>setJobSummaryOpen(latestAudioSyncJob)}>סיכום אחרון</button> : null}</div></div><div className="list">{assetLinks.map(asset=>asset.value ? <a className="row click assetLinkRow" key={asset.key} href={asset.value} target="_blank" rel="noreferrer"><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'end'}}>{assetStatusPill(asset.status)}<span className="pill green">פתח</span></span></a> : <button className="row click assetLinkRow" key={asset.key} onClick={()=>setAssetsOpen(true)}><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span className="pill red">להוסיף</span></button>)}</div>{ep.assetsNote ? <p className="muted" style={{margin:'14px 0 0'}}>{ep.assetsNote}</p> : null}</div>
     </section>
     <section className="grid two" style={{marginTop:16}}>
       <div className="panel"><h2>הפצה</h2>{episodePlatforms.length ? <div className="table">{episodePlatforms.map(p=><div className="tableRow" key={p.name}><strong>{p.name}</strong><span>{p.asset}</span><span>{p.link}</span><span className="pill">{p.status}</span></div>)}</div> : <p className="muted">עדיין אין פריטי הפצה לפרק הזה.</p>}</div>
@@ -496,6 +565,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
     {editOpen && <Modal title="עריכת פרטי פרק" subtitle="שינויים נשמרים בכרטיס הפרק ובקישורים למשימות שלו." onClose={()=>setEditOpen(false)}><form className="smartForm" onSubmit={updateEpisode}><FormRow label="שם הפרק" name="title" required><input name="title" defaultValue={ep.title} required /></FormRow><FormRow label="מספר פרק"><input name="number" defaultValue={ep.number} /></FormRow><FormRow label="נושא / זווית"><input name="topic" defaultValue={ep.topic} /></FormRow><FormRow label="מנחה"><input name="host" defaultValue={ep.host} /></FormRow><FormRow label="מרואיינים"><input name="guests" defaultValue={ep.guests} /></FormRow><FormRow label="סטטוס"><select name="status" defaultValue={ep.status}>{statusFlow.map(s=><option key={s}>{s}</option>)}</select></FormRow><FormRow label="מועד צילום חדש"><input name="recording" type="datetime-local" /></FormRow><FormRow label="או טקסט צילום"><input name="recordingText" defaultValue={ep.recording} /></FormRow><FormRow label="מועד פרסום חדש"><input name="publish" type="datetime-local" /></FormRow><FormRow label="או טקסט פרסום"><input name="publishText" defaultValue={ep.publish} /></FormRow><label className="checkRow"><input type="checkbox" name="urgent" defaultChecked={!!ep.urgent}/> לסמן כדחוף</label><div className="formActions"><button className="btn light" type="button" onClick={()=>setEditOpen(false)}>ביטול</button><button className="btn gold">שמירת שינויים</button></div></form></Modal>}
     {assetsOpen && <Modal title="נכסי הפרק" subtitle="הזינו כאן את כל הקישורים החשובים של הפרק. סנכרון Drive ימלא אוטומטית את תיקיות הפרק." onClose={()=>setAssetsOpen(false)}><form className="smartForm" onSubmit={saveAssets}><FormRow label="תיקיית Drive של הפרק"><input name="driveFolderUrl" type="url" defaultValue={ep.driveFolderUrl || ''} placeholder="https://drive.google.com/..." /></FormRow><FormRow label="תיקיית סרטוני שיווק"><input name="driveMarketingFolderUrl" type="url" defaultValue={ep.driveMarketingFolderUrl || ep.shortsDriveFolderUrl || ''} placeholder="תיקיית Reels / Shorts / TikTok" /></FormRow><FormRow label="תיקיית הפרק המצולם המלא"><input name="fullVideoFolderUrl" type="url" defaultValue={ep.fullVideoFolderUrl || ep.fullVideoUrl || ''} placeholder="תיקיית וידאו מלא" /></FormRow><FormRow label="תיקיית קובץ שמע מלא"><input name="fullAudioFolderUrl" type="url" defaultValue={ep.fullAudioFolderUrl || ''} placeholder="תיקיית אודיו מלא" /></FormRow><input type="hidden" name="fullVideoUrl" value={ep.fullVideoFolderUrl || ep.fullVideoUrl || ''} /><input type="hidden" name="shortsDriveFolderUrl" value={ep.driveMarketingFolderUrl || ep.shortsDriveFolderUrl || ''} /><FormRow label="קישור YouTube"><input name="youtubeUrl" type="url" defaultValue={ep.youtubeUrl || ''} placeholder="https://youtube.com/watch..." /></FormRow><FormRow label="קישור Spotify"><input name="spotifyUrl" type="url" defaultValue={ep.spotifyUrl || ''} placeholder="https://open.spotify.com/..." /></FormRow><label className="formRow wide"><span>הערות על נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''} placeholder="לדוגמה: חסר Thumbnail, מחכה לעריכת אודיו, הקליפים מוכנים להפצה..." /></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setAssetsOpen(false)}>ביטול</button><button className="btn gold">שמירת נכסים</button></div></form></Modal>}
     {briefOpen && <Modal title="בריף ותוכן" subtitle="המידע נשמר בתוך מרכז הפרק." onClose={()=>setBriefOpen(false)}><form className="smartForm" onSubmit={saveBrief}><label className="formRow wide"><span>בריף לפרק</span><textarea name="brief" rows={4} defaultValue={ep.brief || ''}/></label><label className="formRow wide"><span>תוכנית תוכן / שאלות</span><textarea name="contentPlan" rows={4} defaultValue={ep.contentPlan || ''}/></label><label className="formRow wide"><span>תיאום ודגשים</span><textarea name="coordinationNote" rows={4} defaultValue={ep.coordinationNote || ''}/></label><label className="formRow wide"><span>נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''}/></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setBriefOpen(false)}>ביטול</button><button className="btn gold">שמירה</button></div></form></Modal>}
+    {jobSummaryOpen && <Modal title="סיכום סאונד וכתוביות" subtitle={`פרק: ${jobSummaryOpen.episodeTitle}`} onClose={()=>acknowledgeAudioSyncJob(jobSummaryOpen)}><div className="summaryBox"><pre>{jobSummaryOpen.summaryHebrew || jobSummaryOpen.error || 'אין עדיין סיכום.'}</pre>{jobSummaryOpen.outputFolderUrl ? <a className="btn gold" href={jobSummaryOpen.outputFolderUrl} target="_blank" rel="noreferrer">פתיחת תיקיית התוצאות בדרייב</a> : null}<div className="formActions"><button className="btn light" type="button" onClick={()=>acknowledgeAudioSyncJob(jobSummaryOpen)}>סגירה וסימון כנקרא</button></div></div></Modal>}
     {taskOpen && <Modal title="משימה חדשה לפרק" subtitle={`המשימה תתחבר ישירות אל ${ep.title}.`} onClose={()=>setTaskOpen(false)}><form className="smartForm" onSubmit={addTask}><FormRow label="שם המשימה" name="title" required/><FormRow label="אחראי" name="owner"/><FormRow label="דדליין"><input name="due" type="datetime-local" /></FormRow><FormRow label="או טקסט דדליין" name="dueText"/><FormRow label="סוג"><select name="type"><option>תוכן</option><option>תיאום</option><option>צילום</option><option>עריכה</option><option>הפצה</option><option>וואטסאפ</option><option>כללי</option></select></FormRow><div className="formActions"><button className="btn light" type="button" onClick={()=>setTaskOpen(false)}>ביטול</button><button className="btn gold">יצירת משימה</button></div></form></Modal>}
   </>;
 }
@@ -564,16 +634,104 @@ function platformServiceFromName(name: string) {
  if (key.includes('twitter') || key === 'x') return 'twitter';
  if (key.includes('bluesky')) return 'bluesky';
  if (key.includes('mastodon')) return 'mastodon';
+ if (key.includes('spotify')) return 'spotify';
  return '';
 }
 
 function platformPriority(name: string) {
  const service = platformServiceFromName(name);
- const order: Record<string, number> = { tiktok: 1, instagram: 2, youtube: 3, linkedin: 4, facebook: 5, threads: 6, twitter: 7 };
- if (service && order[service]) return order[service];
+ const order: Record<string, number> = { spotify: 0, tiktok: 1, instagram: 2, youtube: 3, linkedin: 4, facebook: 5, threads: 6, twitter: 7 };
+ if (service && order[service] !== undefined) return order[service];
  if (name.includes('Spotify')) return 20;
  if (name.includes('Apple')) return 21;
  return 50;
+}
+
+
+type SpotifyStatusView = {
+ configured: boolean;
+ storageReady?: boolean;
+ message?: string;
+ bucket: string;
+ publicBaseUrl: string;
+ feedUrl: string;
+ publishedCount: number;
+ totalCount: number;
+ show: { title:string; description:string; language:string; author:string; ownerName:string; ownerEmail:string; imageUrl:string; category:string; explicit:string };
+};
+
+const podcastStatusLabels: Record<PodcastPublishStatus, string> = { draft:'טיוטה', scheduled:'מתוזמן', published:'פורסם', archived:'ארכיון' };
+function podcastStatusClass(status: PodcastPublishStatus) {
+ if (status === 'published') return 'pill green';
+ if (status === 'scheduled') return 'pill blue';
+ if (status === 'archived') return 'pill';
+ return 'pill red';
+}
+function bytesLabel(value?: number) {
+ if (!value) return '—';
+ if (value > 1024*1024*1024) return `${(value/1024/1024/1024).toFixed(1)}GB`;
+ return `${(value/1024/1024).toFixed(1)}MB`;
+}
+function nowLocalInput() { return new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16); }
+function localToIso(value: string) { return value ? new Date(value).toISOString() : ''; }
+function isoToLocal(value?: string) { return value ? formatDateTimeInput(value, '') : ''; }
+
+function SpotifyPodcastManager({ store, setStore, notice, setNotice }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; notice: string; setNotice: (value:string)=>void }) {
+ const [status,setStatus]=useState<SpotifyStatusView | null>(null);
+ const [episodes,setEpisodes]=useState<PodcastEpisode[]>([]);
+ const [selectedId,setSelectedId]=useState('new');
+ const [saving,setSaving]=useState(false);
+ const [uploading,setUploading]=useState(false);
+ const selected=episodes.find(e=>e.id===selectedId) || null;
+ const sourceEpisode=selected?.sourceEpisodeId ? store.episodes.find(e=>e.id===selected.sourceEpisodeId) : store.episodes[0];
+ const defaults={ title:selected?.title || sourceEpisode?.title || '', description:selected?.description || sourceEpisode?.topic || '', episodeNumber:selected?.episodeNumber || sourceEpisode?.number || '', seasonNumber:selected?.seasonNumber || 1, status:selected?.status || 'draft' as PodcastPublishStatus, scheduledAt:isoToLocal(selected?.scheduledAt), publishedAt:isoToLocal(selected?.publishedAt), audioUrl:selected?.audioUrl || '', imageUrl:selected?.imageUrl || '', spotifyUrl:selected?.spotifyUrl || '', duration:selected?.duration || '', explicit:Boolean(selected?.explicit), sourceEpisodeId:selected?.sourceEpisodeId || sourceEpisode?.id || '' };
+ async function refresh(){
+  const [statusRes,episodesRes]=await Promise.all([fetch('/api/podcast/spotify/status',{cache:'no-store'}), fetch('/api/podcast/spotify/episodes',{cache:'no-store'})]);
+  const st=await statusRes.json(); const ep=await episodesRes.json();
+  setStatus(st); setEpisodes(ep.episodes || []);
+  setStore(s=>({...s,podcastEpisodes:ep.episodes || []}));
+ }
+ useEffect(()=>{ refresh().catch(error=>setNotice(error instanceof Error ? error.message : 'טעינת Spotify נכשלה')); }, []);
+ function chooseSource(id:string){ const ep=store.episodes.find(e=>String(e.id)===id); if(!ep) return; setSelectedId('new'); window.setTimeout(()=>{ const titleInput=document.querySelector<HTMLInputElement>('input[name="podcastTitle"]'); if(titleInput) titleInput.value=ep.title; },0); }
+ async function uploadAudio(file: File, episodeId?: string){
+  setUploading(true); setNotice('');
+  try{
+   const body=new FormData(); body.set('file',file); if(episodeId) body.set('episodeId',episodeId);
+   const res=await fetch('/api/podcast/spotify/upload',{method:'POST',body}); const data=await res.json();
+   if(!res.ok || !data.ok) throw new Error(data.message || 'העלאת אודיו נכשלה');
+   setNotice(`האודיו עלה ל־Supabase: ${data.audioFileName || file.name}`);
+   return data;
+  }finally{ setUploading(false); }
+ }
+ async function save(ev: FormEvent<HTMLFormElement>){
+  ev.preventDefault(); const f=ev.currentTarget; setSaving(true); setNotice('');
+  try{
+   const file=(f.elements.namedItem('audioFile') as HTMLInputElement)?.files?.[0];
+   let uploaded: Partial<PodcastEpisode> = {};
+   const id=selected?.id || crypto.randomUUID();
+   if(file) uploaded=await uploadAudio(file,id);
+   const statusValue=field(f,'podcastStatus') as PodcastPublishStatus;
+   const payload: Partial<PodcastEpisode>={ id, sourceEpisodeId:Number(field(f,'sourceEpisodeId')) || undefined, title:field(f,'podcastTitle'), description:field(f,'podcastDescription'), episodeNumber:Number(field(f,'episodeNumber')) || undefined, seasonNumber:Number(field(f,'seasonNumber')) || undefined, status:statusValue, scheduledAt:localToIso(field(f,'scheduledAt')), publishedAt:localToIso(field(f,'publishedAt')) || (statusValue==='published'?new Date().toISOString():undefined), audioUrl:field(f,'audioUrl'), imageUrl:field(f,'imageUrl'), spotifyUrl:field(f,'spotifyUrl'), duration:field(f,'duration'), explicit:field(f,'explicit')==='on', ...uploaded };
+   const res=await fetch('/api/podcast/spotify/episodes',{method:selected?'PUT':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}); const data=await res.json();
+   if(!res.ok || !data.ok) throw new Error(data.message || 'שמירה נכשלה');
+   setSelectedId(data.episode.id); setNotice(statusValue==='scheduled'?'הפרק נשמר וייכנס ל־RSS בזמן התזמון.':'פרק Spotify נשמר.'); await refresh();
+  }catch(error){ setNotice(error instanceof Error ? error.message : 'שמירה נכשלה'); }
+  finally{ setSaving(false); }
+ }
+ async function remove(id:string){
+  const ep=episodes.find(e=>e.id===id); if(!ep || !window.confirm(`למחוק את “${ep.title}” מניהול Spotify? קובץ האודיו ב־Supabase לא נמחק אוטומטית.`)) return;
+  const res=await fetch(`/api/podcast/spotify/episodes?id=${encodeURIComponent(id)}`,{method:'DELETE'}); if(!res.ok) { setNotice('מחיקה נכשלה'); return; }
+  setSelectedId('new'); setNotice('הפרק נמחק מניהול Spotify.'); await refresh();
+ }
+ const storageOk=status?.configured && status?.storageReady;
+ return <section className="platformWorkspace grid two" aria-label="ניהול Spotify">
+  <div className="platformWorkspaceHead panel"><span className={storageOk?'pill green':status?.configured?'pill blue':'pill red'}>Spotify</span><div><h2>ניהול Spotify / RSS עצמאי</h2><p className="muted">פודקש מייצרת RSS Feed תקני ומגישה פרקים מאחסון Supabase נפרד. את ה־RSS מחברים פעם אחת ל־Spotify, וכל פרק Published/מתוזמן יופיע שם אוטומטית.</p></div></div>
+  <div className="platformWorkspaceBody grid two">
+   <div className="panel dark"><h2>Feed וחיבור</h2><div className="list"><div className="row"><span>סטטוס Supabase</span><b>{status?.message || 'בודק…'}</b></div><div className="row"><span>Bucket</span><b>{status?.bucket || 'podcast-audio'}</b></div><div className="row"><span>RSS ל־Spotify</span><code className="inlineCode">{status?.feedUrl || '/api/podcast/spotify/rss'}</code></div><div className="row"><span>פרקים ב־RSS</span><b>{status?.publishedCount ?? 0} מתוך {status?.totalCount ?? episodes.length}</b></div></div><div className="formActions" style={{marginTop:14}}><button className="btn light" type="button" onClick={()=>refresh()}>רענון</button>{status?.feedUrl?<a className="btn gold" href={status.feedUrl} target="_blank" rel="noreferrer">פתיחת RSS</a>:null}</div>{!storageOk?<p className="muted" style={{marginTop:14}}>כדי להעלות אודיו צריך ליצור Supabase project נפרד, bucket ציבורי בשם <b>podcast-audio</b>, ולהוסיף env vars ב־Vercel. עד אז אפשר לנהל metadata ולהדביק Audio URL חיצוני ידנית.</p>:null}</div>
+   <div className="panel"><h2>פרקים מנוהלים</h2><div className="list">{episodes.length?episodes.map(ep=><button className="row click" key={ep.id} onClick={()=>setSelectedId(ep.id)}><span><b>{ep.title}</b><br/><small className="muted">{bytesLabel(ep.audioBytes)} · {ep.scheduledAt ? cleanDateTime(ep.scheduledAt) : cleanDateTime(ep.publishedAt || ep.createdAt)}</small></span><span className={podcastStatusClass(ep.status)}>{podcastStatusLabels[ep.status]}</span></button>):<p className="muted">עדיין אין פרקים ב־Spotify. צור פרק ראשון מהטופס.</p>}</div><button className="btn dark" style={{marginTop:14}} type="button" onClick={()=>setSelectedId('new')}>+ פרק Spotify חדש</button></div>
+   <div className="panel" style={{gridColumn:'1 / -1'}}><h2>{selected?'עריכת פרק Spotify':'יצירת פרק Spotify'}</h2><form className="smartForm" onSubmit={save} key={selected?.id || 'new'}><FormRow label="פרק מקור בפודקש"><select name="sourceEpisodeId" defaultValue={String(defaults.sourceEpisodeId)} onChange={e=>chooseSource(e.target.value)}>{store.episodes.map(e=><option key={e.id} value={e.id}>{`#${e.number} · ${e.title}`}</option>)}</select></FormRow><FormRow label="כותרת"><input name="podcastTitle" defaultValue={defaults.title} required /></FormRow><FormRow label="סטטוס"><select name="podcastStatus" defaultValue={defaults.status}><option value="draft">טיוטה</option><option value="scheduled">מתוזמן</option><option value="published">פורסם</option><option value="archived">ארכיון / מוסתר</option></select></FormRow><FormRow label="תזמון פרסום"><input name="scheduledAt" type="datetime-local" defaultValue={defaults.scheduledAt || nowLocalInput()} /></FormRow><FormRow label="פורסם בפועל"><input name="publishedAt" type="datetime-local" defaultValue={defaults.publishedAt} /></FormRow><FormRow label="מספר פרק"><input name="episodeNumber" type="number" defaultValue={defaults.episodeNumber} /></FormRow><FormRow label="עונה"><input name="seasonNumber" type="number" defaultValue={defaults.seasonNumber} /></FormRow><FormRow label="משך"><input name="duration" placeholder="01:12:30" defaultValue={defaults.duration} /></FormRow><FormRow label="קובץ MP3 ל־Supabase"><input name="audioFile" type="file" accept="audio/*" disabled={!storageOk || uploading} /></FormRow><FormRow label="Audio URL ידני"><input name="audioUrl" type="url" defaultValue={defaults.audioUrl} placeholder="https://...mp3" /></FormRow><FormRow label="תמונת פרק"><input name="imageUrl" type="url" defaultValue={defaults.imageUrl} /></FormRow><FormRow label="קישור Spotify אחרי קליטה"><input name="spotifyUrl" type="url" defaultValue={defaults.spotifyUrl} /></FormRow><label className="checkRow"><input type="checkbox" name="explicit" defaultChecked={defaults.explicit}/> תוכן Explicit</label><label className="formRow wide"><span>תיאור הפרק</span><textarea name="podcastDescription" rows={7} defaultValue={defaults.description} /></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setSelectedId('new')}>נקה</button>{selected?<button className="btn light" type="button" onClick={()=>remove(selected.id)}>מחיקה</button>:null}<button className="btn gold" disabled={saving || uploading}>{uploading?'מעלה אודיו…':saving?'שומר…':'שמירת פרק Spotify'}</button></div></form></div>
+  </div>
+ </section>;
 }
 
 export function DistributionClient(){
@@ -607,8 +765,8 @@ export function DistributionClient(){
    ...store.platforms.map((p): [string, { name:string; service:string }] => [platformServiceFromName(p.name)||p.name.toLowerCase(), { name:p.name, service:platformServiceFromName(p.name) }]),
    ...activeChannels.map((c): [string, { name:string; service:string }] => [c.service, { name:c.platformLabel || platformName(c.service), service:c.service }]),
  ];
- const platformAreas=[...new Map(platformEntries).values()].sort((a,b)=>platformPriority(a.name)-platformPriority(b.name));
- const [activePlatformKey,setActivePlatformKey]=useState('tiktok');
+ const platformAreas=[...new Map([['spotify',{ name:'Spotify', service:'spotify' }], ...platformEntries]).values()].sort((a,b)=>platformPriority(a.name)-platformPriority(b.name));
+ const [activePlatformKey,setActivePlatformKey]=useState('spotify');
  const activePlatform=platformAreas.find(area=>(area.service || area.name.toLowerCase())===activePlatformKey) || platformAreas[0];
 
  async function loadDrive(){
@@ -709,7 +867,7 @@ export function DistributionClient(){
  <nav className="platformTabs" aria-label="בחירת פלטפורמה לניהול"><button key="youtube" type="button" className={`platformTab ${activePlatformKey==='youtube'?'on':''}`} onClick={()=>setActivePlatformKey('youtube')} aria-pressed={activePlatformKey==='youtube'}><b>YouTube</b><small>העלאה וניהול</small></button><button key="drive" type="button" className={`platformTab ${activePlatformKey==='drive'?'on':''}`} onClick={()=>setActivePlatformKey('drive')} aria-pressed={activePlatformKey==='drive'}><b>Google Drive</b><small>{driveLoading?'בודק…':drive?.connected?'מחובר':'נכסים'}</small></button>{platformAreas.map(area=>{ const key=area.service || area.name.toLowerCase(); const channels=area.service ? activeChannels.filter(c=>c.service===area.service) : []; const rows=store.platforms.filter(p=>p.name===area.name || (area.service && platformServiceFromName(p.name)===area.service)); const active=key===activePlatformKey; return <button key={key} type="button" className={`platformTab ${active?'on':''}`} onClick={()=>setActivePlatformKey(key)} aria-pressed={active}><b>{area.name}</b><small>{channels.length?`${channels.length} ערוצי Buffer`:rows[0]?.status || 'ניהול'}</small></button>; })}</nav>
  {notice&&<section className="panel" style={{marginBottom:16}} role="status" aria-live="polite"><p className="muted" style={{margin:0}}>{notice}</p></section>}
  {publishingErrors>0?<section className="panel" style={{marginBottom:16}}><p className="muted" style={{margin:0}}>יש {publishingErrors} פלטפורמות עם שגיאת פרסום/כשל שדורשות בדיקה.</p></section>:null}
- {activePlatformKey==='youtube' ? <YouTubeStudio episodes={store.episodes} onUploaded={(epId,url)=>setStore(s=>({...s,episodes:s.episodes.map(e=>e.id===epId?{...e,youtubeUrl:url}:e)}))} /> : activePlatformKey==='drive' ? <section className="panel drivePanel" style={{marginBottom:16}}><div className="drivePanelHead"><div><span className={drive?.connected?'pill green':drive?.configured?'pill blue':'pill red'}>{driveLoading?'בודק…':drive?.connected?'Drive מחובר':drive?.configured?'מוכן לחיבור':'צריך הגדרה'}</span><h2>Google Drive מלא</h2><p className="muted">חיבור מאובטח מאחורי סיסמת המנהל, עם הרשאה מלאה ל־Drive. הסנכרון יוצר לכל פרק תיקיית Drive מסודרת עם תיקיות משנה: סרטוני שיווק, הפרק המצולם המלא וקובץ שמע מלא — ומעדכן את אזור הנכסים בפרקים.</p></div><div className="headAction">{drive?.configured ? <a className="btn gold" href="/api/google/auth/start">חיבור Drive</a> : <button className="btn gold" disabled>חסר Client ID</button>}{drive?.connected ? <button className="btn dark" onClick={syncDrive} disabled={driveSyncing}>{driveSyncing?'מסנכרן…':'סנכרון מלא עכשיו'}</button> : null}{drive?.connected ? <button className="btn light" onClick={disconnectDrive}>ניתוק</button> : null}<button className="btn light" onClick={loadDrive}>רענון</button></div></div>{drive?.connected ? <div className="list"><div className="row"><span>חשבון מחובר</span><b>{drive.connection?.email || drive.connection?.name || 'Google Drive'}</b></div><div className="row"><span>Token פעיל עד</span><b>{cleanDateTime(drive.connection?.expiresAt)}</b></div><div className="row"><span>מבנה סנכרון</span><b>Podkash Episodes / #פרק - שם הפרק / תיקיות נכסים</b></div></div> : <div className="list"><div className="row"><span>Redirect URI להגדרה בגוגל</span><code className="inlineCode">{drive?.redirectUri || 'https://podkash.vercel.app/api/google/auth/callback'}</code></div>{drive?.configured ? <div className="row"><span>סטטוס</span><b>הפרויקט מוגדר. אפשר ללחוץ “חיבור Drive”.</b></div> : <div className="row"><span>סטטוס</span><b>צריך להוסיף GOOGLE_CLIENT_ID ו־GOOGLE_CLIENT_SECRET ב־Vercel.</b></div>}</div>}</section> : activePlatform?<PlatformManager key={`${activePlatform.service || activePlatform.name}`} name={activePlatform.name} service={activePlatform.service} />:null}
+ {activePlatformKey==='youtube' ? <YouTubeStudio episodes={store.episodes} onUploaded={(epId,url)=>setStore(s=>({...s,episodes:s.episodes.map(e=>e.id===epId?{...e,youtubeUrl:url}:e)}))} /> : activePlatformKey==='drive' ? <section className="panel drivePanel" style={{marginBottom:16}}><div className="drivePanelHead"><div><span className={drive?.connected?'pill green':drive?.configured?'pill blue':'pill red'}>{driveLoading?'בודק…':drive?.connected?'Drive מחובר':drive?.configured?'מוכן לחיבור':'צריך הגדרה'}</span><h2>Google Drive מלא</h2><p className="muted">חיבור מאובטח מאחורי סיסמת המנהל, עם הרשאה מלאה ל־Drive. הסנכרון יוצר לכל פרק תיקיית Drive מסודרת עם תיקיות משנה: סרטוני שיווק, הפרק המצולם המלא וקובץ שמע מלא — ומעדכן את אזור הנכסים בפרקים.</p></div><div className="headAction">{drive?.configured ? <a className="btn gold" href="/api/google/auth/start">חיבור Drive</a> : <button className="btn gold" disabled>חסר Client ID</button>}{drive?.connected ? <button className="btn dark" onClick={syncDrive} disabled={driveSyncing}>{driveSyncing?'מסנכרן…':'סנכרון מלא עכשיו'}</button> : null}{drive?.connected ? <button className="btn light" onClick={disconnectDrive}>ניתוק</button> : null}<button className="btn light" onClick={loadDrive}>רענון</button></div></div>{drive?.connected ? <div className="list"><div className="row"><span>חשבון מחובר</span><b>{drive.connection?.email || drive.connection?.name || 'Google Drive'}</b></div><div className="row"><span>Token פעיל עד</span><b>{cleanDateTime(drive.connection?.expiresAt)}</b></div><div className="row"><span>מבנה סנכרון</span><b>Podkash Episodes / #פרק - שם הפרק / תיקיות נכסים</b></div></div> : <div className="list"><div className="row"><span>Redirect URI להגדרה בגוגל</span><code className="inlineCode">{drive?.redirectUri || 'https://podkash.vercel.app/api/google/auth/callback'}</code></div>{drive?.configured ? <div className="row"><span>סטטוס</span><b>הפרויקט מוגדר. אפשר ללחוץ “חיבור Drive”.</b></div> : <div className="row"><span>סטטוס</span><b>צריך להוסיף GOOGLE_CLIENT_ID ו־GOOGLE_CLIENT_SECRET ב־Vercel.</b></div>}</div>}</section> : activePlatform?.service==='spotify'?<SpotifyPodcastManager store={store} setStore={setStore} notice={notice} setNotice={setNotice} />:activePlatform?<PlatformManager key={`${activePlatform.service || activePlatform.name}`} name={activePlatform.name} service={activePlatform.service} />:null}
  <details className="disclosurePanel"><summary><span className="pill blue">כללי</span><div><h2>שליחה מרוכזת לכל הערוצים</h2><p className="muted">לשימוש כשצריך ליצור או לפרסם אותו תוכן בכמה פלטפורמות יחד.</p></div></summary><div className="disclosureBody"><section className="panel"><div className="list"><div className="row"><span>פעולה</span><b>{publishLabel()}</b></div><div className="row"><span>ערוצים נבחרים</span><b>{selectedChannels.length}</b></div><div className="row"><span>סוג פרסום</span><b>{schedulingType==='automatic'?'אוטומטי':'התראה ידנית'}</b></div></div><button className="btn gold" style={{marginTop:14}} type="button" onClick={()=>createBufferPost(selected,'כל הפלטפורמות')} disabled={!buffer?.connected || !selected.length || !text.trim() || posting}>{posting?'שולח…':publishAction==='draft'?'צור טיוטות לכל הערוצים':'שלח לכל הערוצים'}</button></section></div></details>
  </>;
 }

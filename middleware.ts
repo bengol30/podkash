@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySession, SESSION_COOKIE } from '@/lib/session';
 
-const PUBLIC_PATHS = ['/login', '/join', '/api/auth/login', '/api/applications'];
+const PUBLIC_PATHS = ['/login', '/join', '/api/auth/login', '/api/applications', '/api/podcast/spotify/rss'];
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`));

@@ -31,6 +31,56 @@ export type Episode = typeof episodes[number] & {
     fullAudio?: DriveFolderStatus;
   };
 };
+export type MarketingAudioSyncJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type MarketingAudioSyncJob = {
+  id: string;
+  episodeId: number;
+  episodeTitle: string;
+  status: MarketingAudioSyncJobStatus;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  outputFolderUrl?: string;
+  combinedVideoUrl?: string;
+  combinedVideoName?: string;
+  summaryHebrew?: string;
+  error?: string;
+  unread?: boolean;
+  items: Array<{
+    fileId?: string;
+    fileName: string;
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+    message?: string;
+    outputFileName?: string;
+    outputFileUrl?: string;
+    detectedOffsetSeconds?: number;
+    originalRemovedAt?: string;
+  }>;
+};
+export type PodcastPublishStatus = 'draft' | 'scheduled' | 'published' | 'archived';
+export type PodcastEpisode = {
+  id: string;
+  sourceEpisodeId?: number;
+  guid: string;
+  episodeNumber?: number;
+  seasonNumber?: number;
+  title: string;
+  description: string;
+  status: PodcastPublishStatus;
+  audioUrl?: string;
+  audioStoragePath?: string;
+  audioFileName?: string;
+  audioBytes?: number;
+  audioMimeType?: string;
+  duration?: string;
+  imageUrl?: string;
+  explicit?: boolean;
+  scheduledAt?: string;
+  publishedAt?: string;
+  spotifyUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 export type Person = typeof people[number] & { email?: string; city?: string; source?: string };
 export type Task = typeof tasks[number];
 export type Message = typeof messages[number];
@@ -75,6 +125,8 @@ export type Store = {
   platforms: Platform[];
   sessions: Session[];
   applications: Application[];
+  podcastEpisodes: PodcastEpisode[];
+  marketingAudioSyncJobs?: MarketingAudioSyncJob[];
 };
 
 export const seedStore: Store = {
@@ -85,4 +137,6 @@ export const seedStore: Store = {
   platforms,
   sessions: productionSessions,
   applications: [],
+  podcastEpisodes: [],
+  marketingAudioSyncJobs: [],
 };

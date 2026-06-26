@@ -28,7 +28,7 @@ function episodeFolderName(episode: Episode) {
   return `${number} - ${episode.title}`.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
 }
 
-async function refreshIfNeeded(tokens: GoogleDriveTokens): Promise<{ tokens: DriveTokens; refreshed: boolean }> {
+export async function refreshGoogleDriveTokensIfNeeded(tokens: GoogleDriveTokens): Promise<{ tokens: DriveTokens; refreshed: boolean }> {
   let accessToken = tokens.accessToken;
   const expiresAt = tokens.expiresAt ? new Date(tokens.expiresAt).getTime() : 0;
   if (!expiresAt || expiresAt > Date.now() + 60_000) return { tokens: { ...tokens, accessToken }, refreshed: false };
@@ -63,11 +63,11 @@ async function refreshIfNeeded(tokens: GoogleDriveTokens): Promise<{ tokens: Dri
 export async function getValidDriveAccessToken(): Promise<string> {
   const raw = await readGoogleDriveTokens();
   if (!raw) throw new Error('Google Drive is not connected');
-  const { tokens } = await refreshIfNeeded(raw);
+  const { tokens } = await refreshGoogleDriveTokensIfNeeded(raw);
   return tokens.accessToken;
 }
 
-async function drive<T>(tokens: DriveTokens, path: string, init: RequestInit = {}): Promise<T> {
+export async function googleDriveApi<T>(tokens: DriveTokens, path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
     ...init,
     headers: {
@@ -87,7 +87,7 @@ async function drive<T>(tokens: DriveTokens, path: string, init: RequestInit = {
 async function findFolder(tokens: DriveTokens, name: string, parentId?: string) {
   const parentQuery = parentId ? ` and '${escapeQueryValue(parentId)}' in parents` : ` and 'root' in parents`;
   const q = `name = '${escapeQueryValue(name)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentQuery}`;
-  const result = await drive<{ files: DriveFile[] }>(tokens, `/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink)&pageSize=1`);
+  const result = await googleDriveApi<{ files: DriveFile[] }>(tokens, `/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink)&pageSize=1`);
   return result.files?.[0] || null;
 }
 
@@ -95,7 +95,7 @@ async function findFolder(tokens: DriveTokens, name: string, parentId?: string) 
 // team and guests can use it without permission friction). Best-effort — never breaks sync.
 async function makeFolderPublic(tokens: DriveTokens, fileId: string) {
   try {
-    await drive(tokens, `/files/${fileId}/permissions?fields=id`, {
+    await googleDriveApi(tokens, `/files/${fileId}/permissions?fields=id`, {
       method: 'POST',
       body: JSON.stringify({ role: 'writer', type: 'anyone' }),
     });
@@ -110,7 +110,7 @@ async function ensureFolder(tokens: DriveTokens, name: string, parentId?: string
     await makeFolderPublic(tokens, existing.id);
     return { ...existing, created: false };
   }
-  const created = await drive<DriveFile>(tokens, '/files?fields=id,name,mimeType,webViewLink', {
+  const created = await googleDriveApi<DriveFile>(tokens, '/files?fields=id,name,mimeType,webViewLink', {
     method: 'POST',
     body: JSON.stringify({
       name,
@@ -122,11 +122,13 @@ async function ensureFolder(tokens: DriveTokens, name: string, parentId?: string
   return { ...created, created: true };
 }
 
-async function listFolderFiles(tokens: DriveTokens, folderId: string) {
+export async function listGoogleDriveFolderFiles(tokens: DriveTokens, folderId: string) {
   const q = `'${escapeQueryValue(folderId)}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
-  const result = await drive<{ files: DriveFile[] }>(tokens, `/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink)&pageSize=20&orderBy=modifiedTime desc`);
+  const result = await googleDriveApi<{ files: DriveFile[] }>(tokens, `/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink)&pageSize=100&orderBy=modifiedTime desc`);
   return result.files || [];
 }
+
+export { ensureFolder as ensureGoogleDriveFolder };
 
 function folderStatus(files: DriveFile[]) {
   return {
@@ -174,7 +176,7 @@ export async function ensureHostDriveFolder(hostName: string): Promise<{ id: str
   try {
     const rawTokens = await readGoogleDriveTokens();
     if (!rawTokens) return null;
-    const { tokens } = await refreshIfNeeded(rawTokens);
+    const { tokens } = await refreshGoogleDriveTokensIfNeeded(rawTokens);
     const root = await ensureFolder(tokens, ROOT_FOLDER_NAME);
     const folderName = `${hostName} מנחה פודק״ש`.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
     const hostFolder = await ensureFolder(tokens, folderName, root.id);
@@ -188,7 +190,7 @@ export async function ensureHostDriveFolder(hostName: string): Promise<{ id: str
 export async function syncGoogleDriveEpisodes(options?: { episodeId?: number; storeId?: string; parentFolderId?: string }) {
   const rawTokens = await readGoogleDriveTokens();
   if (!rawTokens) throw new Error('Google Drive is not connected');
-  const { tokens, refreshed } = await refreshIfNeeded(rawTokens);
+  const { tokens, refreshed } = await refreshGoogleDriveTokensIfNeeded(rawTokens);
   const store = await readStore(options?.storeId);
   const root = options?.parentFolderId
     ? { id: options.parentFolderId, name: '', webViewLink: undefined as string | undefined, created: false }
@@ -215,9 +217,9 @@ export async function syncGoogleDriveEpisodes(options?: { episodeId?: number; st
     if (fullAudioFolder.created) created.push('fullAudio');
 
     const [marketingFiles, fullVideoFiles, fullAudioFiles] = await Promise.all([
-      listFolderFiles(tokens, marketingFolder.id),
-      listFolderFiles(tokens, fullVideoFolder.id),
-      listFolderFiles(tokens, fullAudioFolder.id),
+      listGoogleDriveFolderFiles(tokens, marketingFolder.id),
+      listGoogleDriveFolderFiles(tokens, fullVideoFolder.id),
+      listGoogleDriveFolderFiles(tokens, fullAudioFolder.id),
     ]);
 
     summaries.push({

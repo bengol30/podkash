@@ -58,6 +58,7 @@ export async function ensureStoreTable() {
       updated_at timestamptz not null default now()
     )
   `;
+  await db`alter table podkash_store enable row level security`;
   await db`
     insert into podkash_store (id, data)
     values ('default', ${db.json(seedStore)})
@@ -83,6 +84,8 @@ function coerceStoreData(value: unknown): Store {
     platforms: Array.isArray(source.platforms) ? source.platforms : seedStore.platforms,
     sessions: Array.isArray(source.sessions) ? source.sessions : seedStore.sessions,
     applications: Array.isArray(source.applications) ? source.applications : seedStore.applications,
+    podcastEpisodes: Array.isArray(source.podcastEpisodes) ? source.podcastEpisodes : seedStore.podcastEpisodes,
+    marketingAudioSyncJobs: Array.isArray(source.marketingAudioSyncJobs) ? source.marketingAudioSyncJobs : seedStore.marketingAudioSyncJobs,
   };
 }
 
@@ -127,7 +130,7 @@ export async function writeStore(data: Store, id = 'default'): Promise<Store> {
 }
 
 // ---- Users (admin + hosts), stored as a dedicated podkash_store row ----
-export const blankStore: Store = { episodes: [], people: [], tasks: [], messages: [], platforms: [], sessions: [], applications: [] };
+export const blankStore: Store = { episodes: [], people: [], tasks: [], messages: [], platforms: [], sessions: [], applications: [], podcastEpisodes: [], marketingAudioSyncJobs: [] };
 
 export type StoredUser = {
   id: string;
@@ -282,6 +285,7 @@ export async function ensureGoogleTokensTable() {
       updated_at timestamptz not null default now()
     )
   `;
+  await db`alter table podkash_google_tokens enable row level security`;
 }
 
 async function readConnection(providerId: string): Promise<GoogleDriveConnection | null> {

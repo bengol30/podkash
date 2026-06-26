@@ -15,6 +15,8 @@ function normalizeStore(input: Partial<Store> | string | null | undefined): Stor
     platforms: Array.isArray(source.platforms) ? source.platforms : seedStore.platforms,
     sessions: Array.isArray(source.sessions) ? source.sessions : seedStore.sessions,
     applications: Array.isArray(source.applications) ? source.applications : seedStore.applications,
+    podcastEpisodes: Array.isArray(source.podcastEpisodes) ? source.podcastEpisodes : seedStore.podcastEpisodes,
+    marketingAudioSyncJobs: Array.isArray(source.marketingAudioSyncJobs) ? source.marketingAudioSyncJobs : seedStore.marketingAudioSyncJobs,
   };
 }
 

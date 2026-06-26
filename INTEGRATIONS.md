@@ -78,3 +78,41 @@ Recommended providers: Neon, Supabase Postgres, or Vercel Postgres.
 - תזמון: כשמוגדר `publishAt`, הסרטון עולה כ־`private` ומתפרסם אוטומטית בזמן שנקבע.
 - Google Cloud (בוצע): YouTube Data API v3 מופעל, Redirect URI נוסף, scopes נוספו ל-Data Access, test user podkashk@gmail.com קיים (מצב Testing). פרסום ציבורי דורש audit; עד אז העלאות API נשארות private/מתוזמן/unlisted.
 - אין env חדש: משתמש ב-GOOGLE_CLIENT_ID/SECRET הקיימים; YOUTUBE_REDIRECT_URI אופציונלי.
+
+## Spotify / עצמאי דרך RSS + Supabase Storage
+
+פודקש יכולה לשמש כ־Podcast Host עצמאי: היא מייצרת RSS Feed ב־`/api/podcast/spotify/rss`, מנהלת פרקים בלשונית **הפצה → Spotify**, ומעלה קבצי אודיו ל־Supabase Storage נפרד.
+
+### משתני סביבה נדרשים
+
+להעלאת MP3 ל־Supabase Storage נפרד:
+
+- `PODCAST_SUPABASE_URL` — כתובת הפרויקט החדש ב־Supabase
+- `PODCAST_SUPABASE_SERVICE_ROLE_KEY` — service role key של הפרויקט
+- `PODCAST_SUPABASE_STORAGE_BUCKET` — ברירת מחדל: `podcast-audio`
+- `PODCAST_PUBLIC_BASE_URL` — הדומיין הציבורי של פודקש, למשל `https://podkash.vercel.app`
+
+פרטי RSS מומלצים:
+
+- `PODCAST_SHOW_TITLE`
+- `PODCAST_SHOW_DESCRIPTION`
+- `PODCAST_SHOW_LANGUAGE` — ברירת מחדל `he`
+- `PODCAST_SHOW_AUTHOR`
+- `PODCAST_OWNER_NAME`
+- `PODCAST_OWNER_EMAIL`
+- `PODCAST_SHOW_IMAGE_URL`
+- `PODCAST_SHOW_CATEGORY`
+- `PODCAST_SHOW_EXPLICIT` — `true` / `false`
+
+### Supabase setup
+
+בפרויקט Supabase החדש ליצור bucket ציבורי בשם `podcast-audio`.
+המערכת תעלה קבצי אודיו ל־Storage ותשמור את ה־public URL בפרק Spotify. פרקים בסטטוס `published`, או `scheduled` שהזמן שלהם עבר, יופיעו ב־RSS.
+
+### חיבור ל־Spotify
+
+אחרי שיש לפחות פרק Published עם Audio URL תקין, מחברים את ה־RSS ב־Spotify for Podcasters/Creators:
+
+`https://podkash.vercel.app/api/podcast/spotify/rss`
+
+או הדומיין שמוגדר ב־`PODCAST_PUBLIC_BASE_URL`.
