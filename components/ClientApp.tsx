@@ -487,22 +487,15 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
   }
 
   async function startMarketingAudioSync() {
-    if (!ep.driveMarketingFolderUrl && !ep.shortsDriveFolderUrl) {
-      window.alert('חסרה תיקיית סרטוני שיווק. קודם צריך סנכרון Drive או להוסיף קישור ידנית.');
-      return;
-    }
-    if (!ep.fullAudioFolderUrl) {
-      window.alert('חסרה תיקיית קובץ שמע מלא. קודם צריך סנכרון Drive או להוסיף קישור ידנית.');
-      return;
-    }
-    if (!window.confirm('להתחיל תהליך סנכרון סאונד? בשלב הראשון המערכת תסנכרן ותתמלל בלבד. אחרי שהתמלול מוכן תיפתח עריכת כתוביות חובה, ורק אחרי האישור שלך הסרטונים ירונדרו ויעלו ל־Drive.')) return;
+    if (!window.confirm('להתחיל תהליך סנכרון סאונד? הכפתור יסנכרן קודם את תיקיות Drive של הפרק אם צריך, ואז יתחיל סנכרון ותמלול. אחרי שהתמלול מוכן תיפתח עריכת כתוביות חובה, ורק אחרי האישור שלך הסרטונים ירונדרו ויעלו ל־Drive.')) return;
     setStartingAudioSync(true);
     try {
       const res = await fetch(`/api/episodes/${ep.id}/marketing-audio-sync`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || 'הפעלת סנכרון סאונד וכתוביות נכשלה');
       await refreshStoreFromServer();
-      window.alert('התחלתי את שלב הסנכרון והתמלול. כשהתמלול יהיה מוכן תקפוץ הודעה לעריכת הכתוביות לפני המשך הרינדור.');
+      const driveText = data.driveSync?.syncedEpisodes ? 'Drive סונכרן לפרק, והתחלתי את שלב הסנכרון והתמלול.' : 'התחלתי את שלב הסנכרון והתמלול.';
+      window.alert(`${driveText} כשהתמלול יהיה מוכן תקפוץ הודעה לעריכת הכתוביות לפני המשך הרינדור.`);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'הפעלת סנכרון סאונד וכתוביות נכשלה');
     } finally {
