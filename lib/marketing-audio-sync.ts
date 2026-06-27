@@ -473,6 +473,7 @@ async function prepareSingleVideoSubtitles(options: { tokens: DriveTokens; jobId
       const previewPath = path.join(workDir, `${file.id}-${segment.index}.mp3`);
       await extractPreviewAudio(captionAudioPath, previewPath, segment.startMs, segment.endMs);
       const uploadedPreview = await uploadDriveFile(tokens, previewFolder.id, previewPath, `${safeName(path.basename(file.name, path.extname(file.name)))} - משפט ${segment.index}.mp3`, 'audio/mpeg');
+      segment.previewAudioFileId = uploadedPreview.id;
       segment.previewAudioUrl = uploadedPreview.id ? `https://drive.google.com/uc?export=download&id=${uploadedPreview.id}` : uploadedPreview.webViewLink;
     } catch (error) {
       console.warn('[marketing-audio-sync:preview-audio]', error instanceof Error ? error.message : error);

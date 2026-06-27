@@ -40,6 +40,7 @@ export type MarketingSubtitleSegment = {
   text: string;
   originalText?: string;
   previewAudioUrl?: string;
+  previewAudioFileId?: string;
 };
 export type MarketingAudioSyncJob = {
   id: string;
