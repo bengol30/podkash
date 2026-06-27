@@ -41,10 +41,11 @@ async function supabaseRest<T>(path: string, init: RequestInit = {}): Promise<T>
     },
     cache: 'no-store',
   });
+  const text = await res.text();
   if (!res.ok) {
-    throw new Error(`Supabase REST ${res.status}: ${await res.text()}`);
+    throw new Error(`Supabase REST ${res.status}: ${text}`);
   }
-  return await res.json() as T;
+  return (text ? JSON.parse(text) : null) as T;
 }
 
 export async function ensureStoreTable() {
