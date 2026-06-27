@@ -48,7 +48,7 @@ async function supabaseRest<T>(path: string, init: RequestInit = {}): Promise<T>
 }
 
 export async function ensureStoreTable() {
-  if (!databaseUrl && canUseSupabaseRest()) return;
+  if (canUseSupabaseRest()) return;
   const db = sql();
   await db`
     create table if not exists podkash_store (
@@ -91,7 +91,7 @@ function coerceStoreData(value: unknown): Store {
 
 // Generic key/value access on the podkash_store table (no shape coercion).
 export async function readRaw(id: string): Promise<unknown | null> {
-  if (!databaseUrl && canUseSupabaseRest()) {
+  if (canUseSupabaseRest()) {
     const rows = await supabaseRest<Array<{ data: unknown }>>(`podkash_store?id=eq.${encodeURIComponent(id)}&select=data&limit=1`);
     return rows[0]?.data ?? null;
   }
@@ -102,7 +102,7 @@ export async function readRaw(id: string): Promise<unknown | null> {
 }
 
 export async function writeRaw(id: string, data: unknown): Promise<void> {
-  if (!databaseUrl && canUseSupabaseRest()) {
+  if (canUseSupabaseRest()) {
     await supabaseRest('podkash_store', {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
