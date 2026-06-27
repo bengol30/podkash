@@ -115,6 +115,11 @@ function useStore(initialStore?: Store) {
   const [ready, setReady] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextSave = useRef(true);
+  const replaceStoreFromServer = (next: Partial<Store> | Store) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    skipNextSave.current = true;
+    setStore(normalizeStore(next));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -126,7 +131,7 @@ function useStore(initialStore?: Store) {
         if (!res.ok) throw new Error(await res.text());
         const fromDb = normalizeStore(await res.json());
         if (!cancelled) {
-          setStore(fromDb);
+          replaceStoreFromServer(fromDb);
           // Enable autosave ONLY after a successful load — a failed/blocked load must never overwrite good data.
           setReady(true);
         }
@@ -154,7 +159,7 @@ function useStore(initialStore?: Store) {
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [store, ready]);
 
-  return [store, setStore] as const;
+  return [store, setStore, replaceStoreFromServer] as const;
 }
 
 function field(form: HTMLFormElement, name: string) { return String(new FormData(form).get(name) || '').trim(); }
@@ -178,7 +183,7 @@ function FormRow({ label, name, children, required=false }: { label:string; name
 function TextArea({ label, name, required=false }: { label:string; name:string; required?:boolean }) { return <label className="formRow wide"><span>{label}{required && ' *'}</span><textarea name={name} rows={4} required={required}/></label>; }
 
 export function DashboardClient() {
-  const [store, setStore] = useStore();
+  const [store, setStore, replaceStoreFromServer] = useStore();
   const [audioSyncSummary, setAudioSyncSummary] = useState<MarketingAudioSyncJob | null>(null);
   const urgent = store.episodes.filter(e => e.urgent);
   const open = store.tasks.filter(t => t.status !== 'בוצע');
@@ -191,7 +196,7 @@ export function DashboardClient() {
     setAudioSyncSummary(null);
     await fetch(`/api/marketing-audio-sync/${job.id}/read`, { method: 'POST' }).catch(() => undefined);
     const storeRes = await fetch('/api/store', { cache: 'no-store' }).catch(() => null);
-    if (storeRes?.ok) setStore(normalizeStore(await storeRes.json()));
+    if (storeRes?.ok) replaceStoreFromServer(await storeRes.json());
   }
   return <>
     <AssignApplicationsPrompt store={store} setStore={setStore} />
@@ -228,7 +233,7 @@ function isoToLocalInput(iso?: string) {
 }
 
 export function EpisodesClient() {
-  const [store, setStore] = useStore();
+  const [store, setStore, replaceStoreFromServer] = useStore();
   const router = useRouter();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
@@ -370,7 +375,7 @@ export function EpisodesClient() {
 
 
 export function EpisodeDetailClient({ id, initialStore }: { id: string; initialStore?: Store }) {
-  const [store, setStore] = useStore(initialStore);
+  const [store, setStore, replaceStoreFromServer] = useStore(initialStore);
   const [editOpen, setEditOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [briefOpen, setBriefOpen] = useState(false);
@@ -380,6 +385,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
   const [jobSummaryOpen, setJobSummaryOpen] = useState<MarketingAudioSyncJob | null>(null);
   const [subtitleJob, setSubtitleJob] = useState<MarketingAudioSyncJob | null>(null);
   const [savingSubtitles, setSavingSubtitles] = useState(false);
+  const [subtitleSaveNotice, setSubtitleSaveNotice] = useState('');
   const episode = store.episodes.find(e => String(e.id) === id);
   const audioSyncJobs = episode ? (store.marketingAudioSyncJobs || []).filter(job => job.episodeId === episode.id) : [];
   const latestAudioSyncJob = audioSyncJobs[0];
@@ -388,7 +394,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
 
   async function refreshStoreFromServer() {
     const storeRes = await fetch('/api/store', { cache: 'no-store' });
-    if (storeRes.ok) setStore(normalizeStore(await storeRes.json()));
+    if (storeRes.ok) replaceStoreFromServer(await storeRes.json());
   }
 
   useEffect(() => {
@@ -479,7 +485,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || 'Drive sync failed');
       const storeRes = await fetch('/api/store', { cache: 'no-store' });
-      if (storeRes.ok) setStore(normalizeStore(await storeRes.json()));
+      if (storeRes.ok) replaceStoreFromServer(await storeRes.json());
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'סנכרון Drive נכשל');
     } finally {
@@ -526,14 +532,18 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
 
   async function saveSubtitleDraft(job: MarketingAudioSyncJob) {
     setSavingSubtitles(true);
+    setSubtitleSaveNotice('');
     try {
       const res = await fetch(`/api/marketing-audio-sync/${job.id}/subtitles`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: job.items }) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || 'שמירת הכתוביות נכשלה');
       setSubtitleJob(data.job);
       await refreshStoreFromServer();
+      setSubtitleSaveNotice(`הטיוטה נשמרה · ${new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'שמירת הכתוביות נכשלה');
+      const message = error instanceof Error ? error.message : 'שמירת הכתוביות נכשלה';
+      setSubtitleSaveNotice(message);
+      window.alert(message);
     } finally {
       setSavingSubtitles(false);
     }
@@ -605,7 +615,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
     {assetsOpen && <Modal title="נכסי הפרק" subtitle="הזינו כאן את כל הקישורים החשובים של הפרק. סנכרון Drive ימלא אוטומטית את תיקיות הפרק." onClose={()=>setAssetsOpen(false)}><form className="smartForm" onSubmit={saveAssets}><FormRow label="תיקיית Drive של הפרק"><input name="driveFolderUrl" type="url" defaultValue={ep.driveFolderUrl || ''} placeholder="https://drive.google.com/..." /></FormRow><FormRow label="תיקיית סרטוני שיווק"><input name="driveMarketingFolderUrl" type="url" defaultValue={ep.driveMarketingFolderUrl || ep.shortsDriveFolderUrl || ''} placeholder="תיקיית Reels / Shorts / TikTok" /></FormRow><FormRow label="תיקיית הפרק המצולם המלא"><input name="fullVideoFolderUrl" type="url" defaultValue={ep.fullVideoFolderUrl || ep.fullVideoUrl || ''} placeholder="תיקיית וידאו מלא" /></FormRow><FormRow label="תיקיית קובץ שמע מלא"><input name="fullAudioFolderUrl" type="url" defaultValue={ep.fullAudioFolderUrl || ''} placeholder="תיקיית אודיו מלא" /></FormRow><input type="hidden" name="fullVideoUrl" value={ep.fullVideoFolderUrl || ep.fullVideoUrl || ''} /><input type="hidden" name="shortsDriveFolderUrl" value={ep.driveMarketingFolderUrl || ep.shortsDriveFolderUrl || ''} /><FormRow label="קישור YouTube"><input name="youtubeUrl" type="url" defaultValue={ep.youtubeUrl || ''} placeholder="https://youtube.com/watch..." /></FormRow><FormRow label="קישור Spotify"><input name="spotifyUrl" type="url" defaultValue={ep.spotifyUrl || ''} placeholder="https://open.spotify.com/..." /></FormRow><label className="formRow wide"><span>הערות על נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''} placeholder="לדוגמה: חסר Thumbnail, מחכה לעריכת אודיו, הקליפים מוכנים להפצה..." /></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setAssetsOpen(false)}>ביטול</button><button className="btn gold">שמירת נכסים</button></div></form></Modal>}
     {briefOpen && <Modal title="בריף ותוכן" subtitle="המידע נשמר בתוך מרכז הפרק." onClose={()=>setBriefOpen(false)}><form className="smartForm" onSubmit={saveBrief}><label className="formRow wide"><span>בריף לפרק</span><textarea name="brief" rows={4} defaultValue={ep.brief || ''}/></label><label className="formRow wide"><span>תוכנית תוכן / שאלות</span><textarea name="contentPlan" rows={4} defaultValue={ep.contentPlan || ''}/></label><label className="formRow wide"><span>תיאום ודגשים</span><textarea name="coordinationNote" rows={4} defaultValue={ep.coordinationNote || ''}/></label><label className="formRow wide"><span>נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''}/></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setBriefOpen(false)}>ביטול</button><button className="btn gold">שמירה</button></div></form></Modal>}
     {jobSummaryOpen && <Modal title="סיכום סאונד וכתוביות" subtitle={`פרק: ${jobSummaryOpen.episodeTitle}`} onClose={()=>acknowledgeAudioSyncJob(jobSummaryOpen)}><div className="summaryBox"><pre>{jobSummaryOpen.summaryHebrew || jobSummaryOpen.error || 'אין עדיין סיכום.'}</pre>{jobSummaryOpen.outputFolderUrl ? <a className="btn gold" href={jobSummaryOpen.outputFolderUrl} target="_blank" rel="noreferrer">פתיחת תיקיית התוצאות בדרייב</a> : null}<div className="formActions"><button className="btn light" type="button" onClick={()=>acknowledgeAudioSyncJob(jobSummaryOpen)}>סגירה וסימון כנקרא</button></div></div></Modal>}
-    {subtitleJob && <Modal title="עריכת כתוביות לפני רינדור" subtitle={`פרק: ${subtitleJob.episodeTitle} · ${subtitleJob.items.filter(item=>item.status==='needs_subtitle_review').length} סרטונים ממתינים`} onClose={()=>setSubtitleJob(null)}><div className="summaryBox"><p className="muted" style={{marginTop:0}}>{subtitleJob.status === 'needs_subtitle_review' ? 'זה שלב חובה: תקן כאן את הטקסטים, שמור טיוטה אם צריך, ואז לחץ “המשך רינדור והעלאה”.' : 'אפשר כבר לערוך ולשמור את הכתוביות של הסרטונים שהתמלול שלהם מוכן. המשך הרינדור ייפתח אחרי שכל הסרטונים יסיימו תמלול.'}</p><div className="list">{subtitleJob.items.filter(item=>item.subtitleSegments?.length).map(item=><details className="panel" key={item.fileId || item.fileName} style={{marginBottom:12}}><summary style={{cursor:'pointer',fontWeight:800}}>{item.fileName} · {item.subtitleSegments?.length || 0} משפטים/שורות כתובית</summary><div className="smartForm" style={{marginTop:12}}>{(item.subtitleSegments || []).map((segment, segmentIndex)=><label className="formRow wide" key={segment.id || segmentIndex}><span>משפט {segmentIndex + 1} · {(segment.startMs/1000).toFixed(1)}s–{(segment.endMs/1000).toFixed(1)}s</span>{segment.previewAudioUrl || segment.previewAudioFileId ? <audio controls preload="none" src={`/api/marketing-audio-sync/${subtitleJob.id}/preview-audio?fileId=${encodeURIComponent(item.fileId || '')}&segmentId=${encodeURIComponent(segment.id || '')}&segmentIndex=${segment.index}`} style={{width:'100%'}} /> : null}<textarea rows={2} value={segment.text} onChange={e=>setSubtitleJob(job=>job ? { ...job, items: job.items.map(jobItem=>jobItem.fileId===item.fileId ? { ...jobItem, subtitleSegments: (jobItem.subtitleSegments || []).map((seg,i)=>i===segmentIndex ? { ...seg, text: e.target.value } : seg) } : jobItem) } : job)} /></label>)}</div></details>)}</div><div className="formActions"><button className="btn light" type="button" onClick={()=>subtitleJob && saveSubtitleDraft(subtitleJob)} disabled={savingSubtitles}>{savingSubtitles?'שומר…':'שמירת טיוטת כתוביות'}</button><button className="btn gold" type="button" onClick={()=>subtitleJob && continueAfterSubtitleReview(subtitleJob)} disabled={savingSubtitles || subtitleJob.status !== 'needs_subtitle_review'}>{savingSubtitles?'ממשיך…':subtitleJob.status !== 'needs_subtitle_review'?'ממתין לסיום תמלול כל הסרטונים':'המשך רינדור והעלאה ל־Drive'}</button></div></div></Modal>}
+    {subtitleJob && <Modal title="עריכת כתוביות לפני רינדור" subtitle={`פרק: ${subtitleJob.episodeTitle} · ${subtitleJob.items.filter(item=>item.status==='needs_subtitle_review').length} סרטונים ממתינים`} onClose={()=>setSubtitleJob(null)}><div className="summaryBox"><p className="muted" style={{marginTop:0}}>{subtitleJob.status === 'needs_subtitle_review' ? 'זה שלב חובה: תקן כאן את הטקסטים, שמור טיוטה אם צריך, ואז לחץ “המשך רינדור והעלאה”.' : 'אפשר כבר לערוך ולשמור את הכתוביות של הסרטונים שהתמלול שלהם מוכן. המשך הרינדור ייפתח אחרי שכל הסרטונים יסיימו תמלול.'}</p><div className="list">{subtitleJob.items.filter(item=>item.subtitleSegments?.length).map(item=><details className="panel" key={item.fileId || item.fileName} style={{marginBottom:12}}><summary style={{cursor:'pointer',fontWeight:800}}>{item.fileName} · {item.subtitleSegments?.length || 0} משפטים/שורות כתובית</summary><div className="smartForm" style={{marginTop:12}}>{(item.subtitleSegments || []).map((segment, segmentIndex)=><label className="formRow wide" key={segment.id || segmentIndex}><span>משפט {segmentIndex + 1} · {(segment.startMs/1000).toFixed(1)}s–{(segment.endMs/1000).toFixed(1)}s</span>{segment.previewAudioUrl || segment.previewAudioFileId ? <audio controls preload="none" src={`/api/marketing-audio-sync/${subtitleJob.id}/preview-audio?fileId=${encodeURIComponent(item.fileId || '')}&segmentId=${encodeURIComponent(segment.id || '')}&segmentIndex=${segment.index}`} style={{width:'100%'}} /> : null}<textarea rows={2} value={segment.text} onChange={e=>setSubtitleJob(job=>job ? { ...job, items: job.items.map(jobItem=>jobItem.fileId===item.fileId ? { ...jobItem, subtitleSegments: (jobItem.subtitleSegments || []).map((seg,i)=>i===segmentIndex ? { ...seg, text: e.target.value } : seg) } : jobItem) } : job)} /></label>)}</div></details>)}</div>{subtitleSaveNotice ? <p className="muted" style={{margin:'8px 0 0'}}>{subtitleSaveNotice}</p> : null}<div className="formActions"><button className="btn light" type="button" onClick={()=>subtitleJob && saveSubtitleDraft(subtitleJob)} disabled={savingSubtitles}>{savingSubtitles?'שומר…':'שמירת טיוטת כתוביות'}</button><button className="btn gold" type="button" onClick={()=>subtitleJob && continueAfterSubtitleReview(subtitleJob)} disabled={savingSubtitles || subtitleJob.status !== 'needs_subtitle_review'}>{savingSubtitles?'ממשיך…':subtitleJob.status !== 'needs_subtitle_review'?'ממתין לסיום תמלול כל הסרטונים':'המשך רינדור והעלאה ל־Drive'}</button></div></div></Modal>}
     {taskOpen && <Modal title="משימה חדשה לפרק" subtitle={`המשימה תתחבר ישירות אל ${ep.title}.`} onClose={()=>setTaskOpen(false)}><form className="smartForm" onSubmit={addTask}><FormRow label="שם המשימה" name="title" required/><FormRow label="אחראי" name="owner"/><FormRow label="דדליין"><input name="due" type="datetime-local" /></FormRow><FormRow label="או טקסט דדליין" name="dueText"/><FormRow label="סוג"><select name="type"><option>תוכן</option><option>תיאום</option><option>צילום</option><option>עריכה</option><option>הפצה</option><option>וואטסאפ</option><option>כללי</option></select></FormRow><div className="formActions"><button className="btn light" type="button" onClick={()=>setTaskOpen(false)}>ביטול</button><button className="btn gold">יצירת משימה</button></div></form></Modal>}
   </>;
 }
@@ -775,7 +785,7 @@ function SpotifyPodcastManager({ store, setStore, notice, setNotice }: { store: 
 }
 
 export function DistributionClient(){
- const [store,setStore]=useStore();
+ const [store,setStore,replaceStoreFromServer]=useStore();
  const [buffer,setBuffer]=useState<BufferStatusView | null>(null);
  const [loading,setLoading]=useState(false);
  const [selected,setSelected]=useState<string[]>([]);
@@ -829,7 +839,7 @@ export function DistributionClient(){
    const data=await res.json();
    if(!res.ok || !data.ok) throw new Error(data.error || 'סנכרון Drive נכשל');
    const storeRes=await fetch('/api/store',{cache:'no-store'});
-   if(storeRes.ok) setStore(normalizeStore(await storeRes.json()));
+   if(storeRes.ok) replaceStoreFromServer(await storeRes.json());
    setNotice(`Drive סונכרן: ${data.syncedEpisodes} פרקים · תיקיית אב: ${data.rootFolder?.name || 'Podkash Episodes'}`);
    await loadDrive();
   }catch(error){ setNotice(error instanceof Error ? error.message : 'סנכרון Drive נכשל'); }
