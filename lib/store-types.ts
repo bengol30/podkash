@@ -31,7 +31,16 @@ export type Episode = typeof episodes[number] & {
     fullAudio?: DriveFolderStatus;
   };
 };
-export type MarketingAudioSyncJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type MarketingAudioSyncJobStatus = 'queued' | 'running' | 'needs_subtitle_review' | 'rendering' | 'completed' | 'failed';
+export type MarketingSubtitleSegment = {
+  id: string;
+  index: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+  originalText?: string;
+  previewAudioUrl?: string;
+};
 export type MarketingAudioSyncJob = {
   id: string;
   episodeId: number;
@@ -39,6 +48,8 @@ export type MarketingAudioSyncJob = {
   status: MarketingAudioSyncJobStatus;
   createdAt: string;
   startedAt?: string;
+  reviewedAt?: string;
+  renderingStartedAt?: string;
   finishedAt?: string;
   outputFolderUrl?: string;
   combinedVideoUrl?: string;
@@ -49,11 +60,13 @@ export type MarketingAudioSyncJob = {
   items: Array<{
     fileId?: string;
     fileName: string;
-    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+    status: 'pending' | 'running' | 'needs_subtitle_review' | 'rendering' | 'completed' | 'failed' | 'skipped';
     message?: string;
     outputFileName?: string;
     outputFileUrl?: string;
     detectedOffsetSeconds?: number;
+    durationSeconds?: number;
+    subtitleSegments?: MarketingSubtitleSegment[];
     originalRemovedAt?: string;
   }>;
 };

@@ -6,7 +6,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { readGoogleDriveTokens, readStore, writeStore } from './db';
 import { ensureGoogleDriveFolder, googleDriveApi, listGoogleDriveFolderFiles, refreshGoogleDriveTokensIfNeeded, syncGoogleDriveEpisodes } from './google-drive-sync';
-import { type Episode, type MarketingAudioSyncJob, type Store } from './store-types';
+import { type Episode, type MarketingAudioSyncJob, type MarketingSubtitleSegment, type Store } from './store-types';
 
 type DriveTokens = Awaited<ReturnType<typeof refreshGoogleDriveTokensIfNeeded>>['tokens'];
 type DriveFile = { id: string; name: string; mimeType?: string; webViewLink?: string };
@@ -95,12 +95,12 @@ async function downloadDriveFile(tokens: DriveTokens, file: DriveFile, targetPat
   await writeFile(targetPath, bytes);
 }
 
-async function uploadDriveFile(tokens: DriveTokens, folderId: string, filePath: string, name: string) {
+async function uploadDriveFile(tokens: DriveTokens, folderId: string, filePath: string, name: string, mimeType = 'video/mp4') {
   const fileStats = await stat(filePath);
-  const metadata = { name, parents: [folderId], mimeType: 'video/mp4' };
+  const metadata = { name, parents: [folderId], mimeType };
   const start = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink', {
     method: 'POST',
-    headers: { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': 'video/mp4', 'x-upload-content-length': String(fileStats.size) },
+    headers: { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': mimeType, 'x-upload-content-length': String(fileStats.size) },
     body: JSON.stringify(metadata),
   });
   if (!start.ok) {
@@ -111,7 +111,7 @@ async function uploadDriveFile(tokens: DriveTokens, folderId: string, filePath: 
   if (!uploadUrl) throw new Error('Google Drive לא החזיר כתובת העלאה');
   const uploadInit = {
     method: 'PUT',
-    headers: { 'content-type': 'video/mp4', 'content-length': String(fileStats.size) },
+    headers: { 'content-type': mimeType, 'content-length': String(fileStats.size) },
     body: createReadStream(filePath),
     duplex: 'half',
   } as unknown as RequestInit & { duplex: 'half' };
@@ -119,6 +119,12 @@ async function uploadDriveFile(tokens: DriveTokens, folderId: string, filePath: 
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json?.error?.message || `העלאת ${name} נכשלה (${res.status})`);
   return json as DriveFile;
+}
+
+async function extractPreviewAudio(inputAudioPath: string, outputAudioPath: string, startMs: number, endMs: number) {
+  const start = Math.max(0, startMs / 1000);
+  const duration = Math.max(0.5, (endMs - startMs) / 1000);
+  await run('ffmpeg', ['-y', '-ss', start.toFixed(3), '-t', duration.toFixed(3), '-i', inputAudioPath, '-vn', '-ac', '1', '-ar', '24000', '-b:a', '80k', outputAudioPath]);
 }
 
 async function upsertJob(updater: (job: MarketingAudioSyncJob) => MarketingAudioSyncJob) {
@@ -280,6 +286,24 @@ function formatSrtForReadableCaptions(srt: string) {
   return output.join('\n\n') + '\n';
 }
 
+function parseSrtSegments(srt: string): MarketingSubtitleSegment[] {
+  return srt.replace(/\r/g, '').split(/\n\s*\n/).map(block => block.trim()).filter(Boolean).map((block, idx) => {
+    const lines = block.split('\n').map(line => line.trim()).filter(Boolean);
+    const timing = lines.find(line => line.includes('-->')) || '';
+    const [startRaw = '00:00:00,000', endRaw = '00:00:00,900'] = timing.split('-->').map(value => value.trim().split(' ')[0]);
+    const text = lines.filter(line => !/^\d+$/.test(line) && !line.includes('-->')).join(' ').replace(/[‫‬]/g, '').trim();
+    return { id: `seg_${idx + 1}`, index: idx + 1, startMs: srtTimeToMs(startRaw), endMs: srtTimeToMs(endRaw), text, originalText: text };
+  }).filter(segment => segment.text || segment.endMs > segment.startMs);
+}
+
+function segmentsToSrt(segments: MarketingSubtitleSegment[]) {
+  return segments
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map((segment, idx) => `${idx + 1}\n${msToSrtTime(segment.startMs)} --> ${msToSrtTime(Math.max(segment.endMs, segment.startMs + 500))}\n${splitCaptionLine(segment.text || '')}`)
+    .join('\n\n') + '\n';
+}
+
 async function suggestClipTitleFromTranscript(srtText: string) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('חסר OPENAI_API_KEY ליצירת שם קובץ');
@@ -396,8 +420,8 @@ print(json.dumps({"offsetSeconds": (best_i - anchor_start) * seconds_per_frame, 
   }
 }
 
-async function syncSingleVideo(options: { tokens: DriveTokens; jobId: string; file: DriveFile; audioFile: DriveFile; outputFolderId: string; workDir: string; guestName?: string }) {
-  const { tokens, jobId, file, audioFile, outputFolderId, workDir, guestName } = options;
+async function prepareSingleVideoSubtitles(options: { tokens: DriveTokens; jobId: string; file: DriveFile; audioFile: DriveFile; outputFolderId: string; workDir: string }) {
+  const { tokens, jobId, file, audioFile, outputFolderId, workDir } = options;
   await updateItem(jobId, file.id, { status: 'running', message: 'מוריד ומסנכרן…' });
   const videoPath = path.join(workDir, safeName(file.name));
   const audioPath = path.join(workDir, safeName(audioFile.name));
@@ -405,7 +429,7 @@ async function syncSingleVideo(options: { tokens: DriveTokens; jobId: string; fi
   const fullWav = path.join(workDir, `${audioFile.id}.wav`);
   const syncedPath = path.join(workDir, `${file.id}-synced.mp4`);
   const captionAudioPath = path.join(workDir, `${file.id}-official-caption-audio.mp3`);
-  const outPath = path.join(workDir, outputName(file.name));
+  const srtPath = path.join(workDir, `${file.id}.srt`);
 
   await downloadDriveFile(tokens, file, videoPath);
   await downloadDriveFile(tokens, audioFile, audioPath);
@@ -440,16 +464,82 @@ async function syncSingleVideo(options: { tokens: DriveTokens; jobId: string; fi
     syncedPath,
   ]);
   await extractOfficialCaptionAudio(audioPath, captionAudioPath, alignment.offsetSeconds, duration);
-  await updateItem(jobId, file.id, { message: 'מתמלל מהאודיו הרשמי, צורב כתוביות ובונה שם קובץ…' });
-  const caption = await addOpenAiSubtitles(syncedPath, outPath, workDir, file.id, captionAudioPath);
-  const finalName = namedOutputName(guestName, caption.clipTitle, file.name);
+  await updateItem(jobId, file.id, { message: 'מתמלל מהאודיו הרשמי — ממתין לעריכת כתוביות לפני רינדור…' });
+  const srtText = await transcribeToSrt(captionAudioPath, srtPath);
+  const subtitleSegments = parseSrtSegments(srtText);
+  const previewFolder = await ensureGoogleDriveFolder(tokens, 'קטעי שמע לבדיקת כתוביות', outputFolderId);
+  for (const segment of subtitleSegments) {
+    try {
+      const previewPath = path.join(workDir, `${file.id}-${segment.index}.mp3`);
+      await extractPreviewAudio(captionAudioPath, previewPath, segment.startMs, segment.endMs);
+      const uploadedPreview = await uploadDriveFile(tokens, previewFolder.id, previewPath, `${safeName(path.basename(file.name, path.extname(file.name)))} - משפט ${segment.index}.mp3`, 'audio/mpeg');
+      segment.previewAudioUrl = uploadedPreview.id ? `https://drive.google.com/uc?export=download&id=${uploadedPreview.id}` : uploadedPreview.webViewLink;
+    } catch (error) {
+      console.warn('[marketing-audio-sync:preview-audio]', error instanceof Error ? error.message : error);
+    }
+  }
+  await updateItem(jobId, file.id, {
+    status: 'needs_subtitle_review',
+    message: `התמלול מוכן לבדיקה (${subtitleSegments.length} משפטים/שורות כתובית)`,
+    detectedOffsetSeconds: alignment.offsetSeconds,
+    durationSeconds: duration,
+    subtitleSegments,
+  });
+}
+
+async function renderSingleVideo(options: { tokens: DriveTokens; jobId: string; file: DriveFile; audioFile: DriveFile; outputFolderId: string; workDir: string; guestName?: string; item: MarketingAudioSyncJob['items'][number] }) {
+  const { tokens, jobId, file, audioFile, outputFolderId, workDir, guestName, item } = options;
+  await updateItem(jobId, file.id, { status: 'rendering', message: 'מרנדר עם הכתוביות המאושרות ומעלה ל־Drive…' });
+  const videoPath = path.join(workDir, safeName(file.name));
+  const audioPath = path.join(workDir, safeName(audioFile.name));
+  const syncedPath = path.join(workDir, `${file.id}-synced.mp4`);
+  const srtPath = path.join(workDir, `${file.id}-edited.srt`);
+  const outPath = path.join(workDir, outputName(file.name));
+
+  await downloadDriveFile(tokens, file, videoPath);
+  await downloadDriveFile(tokens, audioFile, audioPath);
+  const duration = item.durationSeconds || await durationSeconds(videoPath);
+  const offsetSeconds = item.detectedOffsetSeconds;
+  if (!Number.isFinite(offsetSeconds)) throw new Error('חסר offset סנכרון — צריך להריץ תמלול מחדש');
+  await run('ffmpeg', [
+    '-y',
+    '-fflags', '+genpts',
+    '-i', videoPath,
+    '-ss', Number(offsetSeconds).toFixed(3),
+    '-t', duration.toFixed(3),
+    '-i', audioPath,
+    '-filter_complex', '[0:v:0]setpts=PTS-STARTPTS[v];[1:a:0]asetpts=PTS-STARTPTS[a]',
+    '-map', '[v]',
+    '-map', '[a]',
+    '-c:v', 'libx264',
+    '-preset', VIDEO_PRESET,
+    '-crf', INTERMEDIATE_VIDEO_CRF,
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-ar', '48000',
+    '-ac', '2',
+    '-shortest',
+    '-avoid_negative_ts', 'make_zero',
+    '-movflags', '+faststart',
+    syncedPath,
+  ]);
+  const editedSrt = segmentsToSrt(item.subtitleSegments || []);
+  await writeFile(srtPath, editedSrt);
+  await burnSubtitles(syncedPath, srtPath, outPath);
+  let clipTitle = '';
+  try {
+    clipTitle = await suggestClipTitleFromTranscript(editedSrt);
+  } catch (error) {
+    console.warn('[marketing-audio-sync:filename]', error instanceof Error ? error.message : error);
+  }
+  const finalName = namedOutputName(guestName, clipTitle, file.name);
   const uploaded = await uploadDriveFile(tokens, outputFolderId, outPath, finalName);
   await updateItem(jobId, file.id, {
     status: 'completed',
-    message: `סונכרן בהצלחה ונוצרו כתוביות OpenAI (offset ${alignment.offsetSeconds.toFixed(2)} שנ׳, confidence ${alignment.confidence.toFixed(2)})`,
+    message: `סונכרן בהצלחה עם כתוביות שאושרו ידנית (offset ${Number(offsetSeconds).toFixed(2)} שנ׳)`,
     outputFileName: uploaded.name,
     outputFileUrl: uploaded.webViewLink,
-    detectedOffsetSeconds: alignment.offsetSeconds,
   });
 }
 
@@ -522,9 +612,100 @@ export async function runMarketingAudioSync(jobId: string) {
 
     for (const file of videos) {
       try {
-        await syncSingleVideo({ tokens, jobId, file, audioFile, outputFolderId: outputFolder.id, workDir, guestName: episode.guests });
+        await prepareSingleVideoSubtitles({ tokens, jobId, file, audioFile, outputFolderId: outputFolder.id, workDir });
       } catch (error) {
         await updateItem(jobId, file.id, { status: 'failed', message: error instanceof Error ? error.message : 'שגיאה לא ידועה' });
+      }
+    }
+
+    const reviewStore = await readStore();
+    const reviewJob = reviewStore.marketingAudioSyncJobs?.find(j => j.id === jobId);
+    if (!reviewJob) throw new Error('המשימה לא נמצאה בסיום התמלול');
+    const readyForReview = reviewJob.items.filter(item => item.status === 'needs_subtitle_review');
+    const failed = reviewJob.items.some(item => item.status === 'failed');
+    if (readyForReview.length) {
+      const totalSegments = readyForReview.reduce((sum, item) => sum + (item.subtitleSegments?.length || 0), 0);
+      const summaryHebrew = `התמלול לפרק “${reviewJob.episodeTitle}” מוכן לבדיקה.\nצריך לדייק כתוביות עבור ${readyForReview.length} סרטונים (${totalSegments} משפטים/שורות כתובית).\nאחרי אישור הכתוביות המערכת תמשיך אוטומטית לרינדור, העלאה ל־Drive ושאר התהליך.`;
+      await updateJob(jobId, { status: 'needs_subtitle_review', summaryHebrew, unread: true });
+    } else {
+      const summary = summarize(reviewJob);
+      await updateJob(jobId, { status: failed ? 'failed' : 'completed', finishedAt: new Date().toISOString(), summaryHebrew: summary, unread: true });
+    }
+  } catch (error) {
+    const current = (await readStore()).marketingAudioSyncJobs?.find(job => job.id === jobId);
+    const next: MarketingAudioSyncJob = current || { id: jobId, episodeId: 0, episodeTitle: 'פרק', status: 'failed', createdAt: new Date().toISOString(), items: [] };
+    const summaryHebrew = `סנכרון סאונד וכתוביות נכשל עבור “${next.episodeTitle}”.\nסיבה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`;
+    await updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : 'שגיאה לא ידועה', summaryHebrew, unread: true });
+  } finally {
+    activeJobs.delete(jobId);
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function updateMarketingAudioSyncSubtitles(jobId: string, items: Array<{ fileId?: string; subtitleSegments?: MarketingSubtitleSegment[] }>) {
+  const store = await readStore();
+  const jobs = (store.marketingAudioSyncJobs || []).map(job => {
+    if (job.id !== jobId) return job;
+    return {
+      ...job,
+      items: job.items.map(item => {
+        const next = items.find(candidate => candidate.fileId === item.fileId);
+        if (!next || !Array.isArray(next.subtitleSegments)) return item;
+        return {
+          ...item,
+          subtitleSegments: next.subtitleSegments.map((segment, index) => ({
+            ...segment,
+            id: segment.id || `seg_${index + 1}`,
+            index: index + 1,
+            text: String(segment.text || '').trim(),
+          })),
+        };
+      }),
+    };
+  });
+  await writeStore({ ...store, marketingAudioSyncJobs: jobs });
+}
+
+export async function continueMarketingAudioSyncAfterSubtitleReview(jobId: string) {
+  if (activeJobs.has(jobId)) return;
+  activeJobs.add(jobId);
+  const workDir = path.join(os.tmpdir(), `podkash-audio-sync-render-${jobId}`);
+  try {
+    await mkdir(workDir, { recursive: true });
+    await updateJob(jobId, { status: 'rendering', reviewedAt: new Date().toISOString(), renderingStartedAt: new Date().toISOString(), unread: false });
+    const rawTokens = await readGoogleDriveTokens();
+    if (!rawTokens) throw new Error('Google Drive לא מחובר');
+    const { tokens } = await refreshGoogleDriveTokensIfNeeded(rawTokens);
+
+    const store = await readStore();
+    const job = store.marketingAudioSyncJobs?.find(j => j.id === jobId);
+    if (!job) throw new Error('המשימה לא נמצאה');
+    const episode = store.episodes.find(ep => ep.id === job.episodeId) as Episode | undefined;
+    if (!episode) throw new Error('הפרק לא נמצא');
+
+    const marketingFolderId = folderIdFromUrl(episode.driveMarketingFolderUrl || episode.shortsDriveFolderUrl);
+    const audioFolderId = folderIdFromUrl(episode.fullAudioFolderUrl);
+    if (!marketingFolderId) throw new Error('חסרה תיקיית סרטוני שיווק בדרייב');
+    if (!audioFolderId) throw new Error('חסרה תיקיית קובץ שמע מלא בדרייב');
+    const [marketing, audio] = await Promise.all([
+      listGoogleDriveFolderFiles(tokens, marketingFolderId),
+      listGoogleDriveFolderFiles(tokens, audioFolderId),
+    ]);
+    const videos = videoFiles(marketing);
+    const audioFile = pickAudioFile(audio);
+    if (!audioFile) throw new Error('לא נמצא קובץ אודיו בתיקיית קובץ שמע מלא');
+    const outputFolder = await ensureGoogleDriveFolder(tokens, OUTPUT_FOLDER_NAME, marketingFolderId);
+
+    for (const item of job.items.filter(item => item.status === 'needs_subtitle_review' || item.status === 'rendering')) {
+      const file = videos.find(video => video.id === item.fileId);
+      if (!file) {
+        await updateItem(jobId, item.fileId, { status: 'failed', message: 'סרטון המקור לא נמצא יותר בתיקיית השיווק' });
+        continue;
+      }
+      try {
+        await renderSingleVideo({ tokens, jobId, file, audioFile, outputFolderId: outputFolder.id, workDir, guestName: episode.guests, item });
+      } catch (error) {
+        await updateItem(jobId, item.fileId, { status: 'failed', message: error instanceof Error ? error.message : 'שגיאה לא ידועה' });
       }
     }
 
@@ -533,11 +714,11 @@ export async function runMarketingAudioSync(jobId: string) {
     if (!finalJob) throw new Error('המשימה לא נמצאה בסיום');
     const failed = finalJob.items.some(item => item.status === 'failed');
     const summary = summarize(finalJob);
-    await updateJob(jobId, { status: failed ? 'failed' : 'completed', finishedAt: new Date().toISOString(), summaryHebrew: summary, unread: true });
+    await updateJob(jobId, { status: failed ? 'failed' : 'completed', finishedAt: new Date().toISOString(), outputFolderUrl: outputFolder.webViewLink, summaryHebrew: summary, unread: true });
   } catch (error) {
     const current = (await readStore()).marketingAudioSyncJobs?.find(job => job.id === jobId);
     const next: MarketingAudioSyncJob = current || { id: jobId, episodeId: 0, episodeTitle: 'פרק', status: 'failed', createdAt: new Date().toISOString(), items: [] };
-    const summaryHebrew = `סנכרון סאונד וכתוביות נכשל עבור “${next.episodeTitle}”.\nסיבה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`;
+    const summaryHebrew = `המשך סנכרון סאונד וכתוביות נכשל עבור “${next.episodeTitle}”.\nסיבה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`;
     await updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : 'שגיאה לא ידועה', summaryHebrew, unread: true });
   } finally {
     activeJobs.delete(jobId);
