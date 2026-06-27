@@ -17,6 +17,8 @@ const AUDIO_RE = /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i;
 const INTERMEDIATE_VIDEO_CRF = process.env.PODKASH_INTERMEDIATE_VIDEO_CRF || '16';
 const FINAL_VIDEO_CRF = process.env.PODKASH_FINAL_VIDEO_CRF || '18';
 const VIDEO_PRESET = process.env.PODKASH_VIDEO_PRESET || 'medium';
+const SUBTITLE_END_PADDING_MS = Number(process.env.PODKASH_SUBTITLE_END_PADDING_MS || '1200');
+const PREVIEW_AUDIO_TAIL_PADDING_MS = Number(process.env.PODKASH_PREVIEW_AUDIO_TAIL_PADDING_MS || '1500');
 const activeJobs = new Set<string>();
 
 function folderIdFromUrl(value?: string) {
@@ -123,7 +125,8 @@ async function uploadDriveFile(tokens: DriveTokens, folderId: string, filePath: 
 
 async function extractPreviewAudio(inputAudioPath: string, outputAudioPath: string, startMs: number, endMs: number) {
   const start = Math.max(0, startMs / 1000);
-  const duration = Math.max(0.5, (endMs - startMs) / 1000);
+  const paddedEndMs = endMs + Math.max(0, PREVIEW_AUDIO_TAIL_PADDING_MS);
+  const duration = Math.max(0.5, (paddedEndMs - startMs) / 1000);
   await run('ffmpeg', ['-y', '-ss', start.toFixed(3), '-t', duration.toFixed(3), '-i', inputAudioPath, '-vn', '-ac', '1', '-ar', '24000', '-b:a', '80k', outputAudioPath]);
 }
 
@@ -297,10 +300,15 @@ function parseSrtSegments(srt: string): MarketingSubtitleSegment[] {
 }
 
 function segmentsToSrt(segments: MarketingSubtitleSegment[]) {
-  return segments
-    .slice()
-    .sort((a, b) => a.index - b.index)
-    .map((segment, idx) => `${idx + 1}\n${msToSrtTime(segment.startMs)} --> ${msToSrtTime(Math.max(segment.endMs, segment.startMs + 500))}\n${splitCaptionLine(segment.text || '')}`)
+  const sorted = segments.slice().sort((a, b) => a.index - b.index);
+  return sorted
+    .map((segment, idx) => {
+      const nextStart = sorted[idx + 1]?.startMs;
+      const paddedEnd = segment.endMs + Math.max(0, SUBTITLE_END_PADDING_MS);
+      const cappedEnd = Number.isFinite(nextStart) ? Math.min(paddedEnd, Math.max(segment.endMs, nextStart - 80)) : paddedEnd;
+      const end = Math.max(cappedEnd, segment.startMs + 700);
+      return `${idx + 1}\n${msToSrtTime(segment.startMs)} --> ${msToSrtTime(end)}\n${splitCaptionLine(segment.text || '')}`;
+    })
     .join('\n\n') + '\n';
 }
 
