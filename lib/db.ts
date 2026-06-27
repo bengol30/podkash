@@ -269,7 +269,7 @@ export type GoogleDriveTokens = GoogleDriveConnection & {
 };
 
 export async function ensureGoogleTokensTable() {
-  if (!databaseUrl && canUseSupabaseRest()) return;
+  if (canUseSupabaseRest()) return;
   const db = sql();
   await db`
     create table if not exists podkash_google_tokens (
@@ -290,7 +290,7 @@ export async function ensureGoogleTokensTable() {
 }
 
 async function readConnection(providerId: string): Promise<GoogleDriveConnection | null> {
-  if (!databaseUrl && canUseSupabaseRest()) {
+  if (canUseSupabaseRest()) {
     const rows = await supabaseRest<GoogleDriveConnection[]>(`podkash_google_tokens?id=eq.${providerId}&select=email,name,picture,scope,connectedAt:created_at,expiresAt:expires_at&limit=1`);
     return rows[0] || null;
   }
@@ -304,7 +304,7 @@ async function readConnection(providerId: string): Promise<GoogleDriveConnection
 }
 
 async function readTokens(providerId: string): Promise<GoogleDriveTokens | null> {
-  if (!databaseUrl && canUseSupabaseRest()) {
+  if (canUseSupabaseRest()) {
     const rows = await supabaseRest<Array<GoogleDriveConnection & { accessToken: string; refreshToken?: string; tokenType?: string }>>(`podkash_google_tokens?id=eq.${providerId}&select=accessToken:access_token,refreshToken:refresh_token,tokenType:token_type,scope,expiresAt:expires_at,email,name,picture,connectedAt:created_at&limit=1`);
     const row = rows[0];
     if (!row) return null;
@@ -332,7 +332,7 @@ async function readTokens(providerId: string): Promise<GoogleDriveTokens | null>
 async function writeTokens(providerId: string, tokens: GoogleDriveTokens) {
   const encryptedAccess = encryptText(tokens.accessToken);
   const encryptedRefresh = tokens.refreshToken ? encryptText(tokens.refreshToken) : null;
-  if (!databaseUrl && canUseSupabaseRest()) {
+  if (canUseSupabaseRest()) {
     await supabaseRest('podkash_google_tokens', {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -370,7 +370,7 @@ async function writeTokens(providerId: string, tokens: GoogleDriveTokens) {
 }
 
 async function deleteTokens(providerId: string) {
-  if (!databaseUrl && canUseSupabaseRest()) {
+  if (canUseSupabaseRest()) {
     await supabaseRest(`podkash_google_tokens?id=eq.${providerId}`, { method: 'DELETE' });
     return;
   }
