@@ -18,6 +18,7 @@ if (!JOB_ID) throw new Error('Usage: render-reviewed-marketing-audio-sync.mjs <j
 
 const INTERMEDIATE_VIDEO_CRF = process.env.PODKASH_INTERMEDIATE_VIDEO_CRF || '16';
 const FINAL_VIDEO_CRF = process.env.PODKASH_FINAL_VIDEO_CRF || '18';
+const COMBINED_VIDEO_CRF = process.env.PODKASH_COMBINED_VIDEO_CRF || '18';
 const VIDEO_PRESET = process.env.PODKASH_VIDEO_PRESET || 'medium';
 const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF || 'sqsxmvbqabftbmuyutlu';
 process.env.SUPABASE_URL ||= `https://${SUPABASE_PROJECT_REF}.supabase.co`;
@@ -60,8 +61,49 @@ function escapeSubtitlePath(filePath){ return filePath.replace(/\\/g,'/').replac
 async function downloadDriveFile(accessToken,file,targetPath){ const res=await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,{headers:{authorization:`Bearer ${accessToken}`}}); if(!res.ok) throw new Error(`הורדת ${file.name} נכשלה (${res.status})`); await writeFile(targetPath,Buffer.from(await res.arrayBuffer())); }
 async function uploadDriveFile(accessToken,folderId,filePath,name){ const st=await stat(filePath); const start=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink',{method:'POST',headers:{authorization:`Bearer ${accessToken}`,'content-type':'application/json; charset=UTF-8','x-upload-content-type':'video/mp4','x-upload-content-length':String(st.size)},body:JSON.stringify({name,parents:[folderId],mimeType:'video/mp4'})}); if(!start.ok) throw new Error(`פתיחת העלאה נכשלה (${start.status})`); const uploadUrl=start.headers.get('location'); if(!uploadUrl) throw new Error('Google Drive לא החזיר כתובת העלאה'); const res=await fetch(uploadUrl,{method:'PUT',headers:{'content-type':'video/mp4','content-length':String(st.size)},body:createReadStream(filePath),duplex:'half'}); const json=await res.json().catch(()=>({})); if(!res.ok) throw new Error(json?.error?.message || `העלאה נכשלה (${res.status})`); return json; }
 function outputName(input){ return `${safeName(path.basename(input,path.extname(input)||'.mp4'))} - עם סאונד רשמי וכתוביות.mp4`; }
-function namedOutputName(guestName='', fallbackInput=''){ const guest=safeName(String(guestName).split(/[,،|/]+/)[0]||'מרואיין').slice(0,45); const title=safeName(path.basename(fallbackInput,path.extname(fallbackInput)||'.mp4')).split(' ').slice(0,4).join(' '); return `${guest} - ${title}.mp4`; }
-function summarize(job){ const done=(job.items||[]).filter(i=>i.status==='completed'); const failed=(job.items||[]).filter(i=>i.status==='failed'); const lines=[`סנכרון סאונד וכתוביות לפרק “${job.episodeTitle}” הסתיים.`,`הצליחו: ${done.length} · נכשלו: ${failed.length} · דולגו: 0`]; if(job.outputFolderUrl) lines.push(`התיקייה בדרייב: ${job.outputFolderUrl}`); if(done.length) lines.push(`\nהצליחו:\n${done.map(i=>`• ${i.fileName}${i.outputFileUrl?` → ${i.outputFileUrl}`:''}`).join('\n')}`); if(failed.length) lines.push(`\nנכשלו:\n${failed.map(i=>`• ${i.fileName}: ${i.message||'שגיאה לא ידועה'}`).join('\n')}`); return lines.join('\n'); }
+function compactGuestName(value=''){ return safeName(String(value).split(/[,،|/]+/)[0]?.replace(/\([^)]*\)/g,'').trim() || 'מרואיין').slice(0,45); }
+function normalizeClipWords(value){ return String(value).replace(/[`"“”'׳״]/g,'').replace(/[\\/:*?<>|]/g,' ').replace(/\s+/g,' ').trim().split(' ').filter(Boolean).slice(0,4).join(' '); }
+function namedOutputName(guestName='', clipTitle='', fallbackInput=''){ const guest=compactGuestName(guestName); const title=normalizeClipWords(clipTitle) || safeName(path.basename(fallbackInput,path.extname(fallbackInput)||'.mp4')).split(' ').slice(0,4).join(' '); return `${guest} - ${safeName(title)}.mp4`; }
+function driveFileIdFromUrl(value=''){ return String(value).match(/[?&]id=([a-zA-Z0-9_-]+)/)?.[1] || String(value).match(/\/d\/([a-zA-Z0-9_-]+)/)?.[1] || ''; }
+function summarize(job){ const done=(job.items||[]).filter(i=>i.status==='completed'); const failed=(job.items||[]).filter(i=>i.status==='failed'); const lines=[`סנכרון סאונד וכתוביות לפרק “${job.episodeTitle}” הסתיים.`,`הצליחו: ${done.length} · נכשלו: ${failed.length} · דולגו: 0`]; if(job.outputFolderUrl) lines.push(`התיקייה בדרייב: ${job.outputFolderUrl}`); if(job.combinedVideoUrl) lines.push(`הסרטון המאוחד בתיקיית השיווק: ${job.combinedVideoUrl}`); if(done.length) lines.push(`\nהצליחו:\n${done.map(i=>`• ${i.fileName}${i.outputFileUrl?` → ${i.outputFileUrl}`:''}`).join('\n')}`); if(failed.length) lines.push(`\nנכשלו:\n${failed.map(i=>`• ${i.fileName}: ${i.message||'שגיאה לא ידועה'}`).join('\n')}`); return lines.join('\n'); }
+async function suggestClipTitleFromTranscript(srtText){
+ const apiKey=process.env.OPENAI_API_KEY;
+ if(!apiKey) return '';
+ const clean=String(srtText).replace(/^\d+$/gm,'').replace(/\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3}/g,'').replace(/\s+/g,' ').trim().slice(0,6000);
+ const res=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{authorization:`Bearer ${apiKey}`,'content-type':'application/json'},body:JSON.stringify({model:process.env.OPENAI_FILENAME_MODEL||'gpt-4o-mini',temperature:0.2,messages:[{role:'system',content:'אתה נותן שם קצר בעברית לקליפ פודקאסט. החזר רק שם, בלי מרכאות, בלי נקודה, עד 4 מילים, לפי הדבר הכי מעניין שנאמר. לא לכלול שם מרואיין.'},{role:'user',content:clean}]})});
+ const json=await res.json().catch(()=>({}));
+ if(!res.ok) return '';
+ return normalizeClipWords(json?.choices?.[0]?.message?.content||'');
+}
+async function meanVolumeDb(filePath){
+ return await new Promise(resolve=>{ const child=spawn('ffmpeg',['-i',filePath,'-af','volumedetect','-f','null','-']); let stderr=''; child.stderr.on('data',c=>stderr+=String(c)); child.on('close',()=>{ const match=stderr.match(/mean_volume:\s*(-?[0-9.]+) dB/); resolve(match?Number(match[1]):-28); }); child.on('error',()=>resolve(-28)); });
+}
+function clamp(n,min,max){ return Math.max(min,Math.min(max,n)); }
+function seededRandom(seed){ let h=2166136261; for(const ch of String(seed)) { h^=ch.charCodeAt(0); h=Math.imul(h,16777619); } return ((h>>>0)%1000000)/1000000; }
+function chooseSegment({duration,meanDb,seed}){ const loudnessFactor=clamp((meanDb+35)/30,0,1); const durationFactor=clamp(duration/90,0,1); const randomFactor=seededRandom(`${seed}:length`); const wanted=8+loudnessFactor*10+durationFactor*8+randomFactor*4; const length=clamp(Math.min(wanted,Math.max(1,duration-0.5)),Math.min(8,duration),Math.min(30,duration)); const maxStart=Math.max(0,duration-length-0.25); return {start:maxStart*seededRandom(`${seed}:start`),length}; }
+async function createCombinedVideo({accessToken,job,ctx,workDir}){
+ const freshStore=await getStore();
+ const freshJob=(freshStore.marketingAudioSyncJobs||[]).find(j=>j.id===JOB_ID)||job;
+ const completed=(freshJob.items||[]).filter(item=>item.status==='completed'&&item.outputFileUrl);
+ if(!completed.length) return null;
+ const segmentPaths=[];
+ for(let index=0; index<completed.length; index++){
+  const item=completed[index]; const outputId=driveFileIdFromUrl(item.outputFileUrl); if(!outputId) continue;
+  const inputPath=path.join(workDir,`combined-source-${index}.mp4`); const segmentPath=path.join(workDir,`combined-segment-${String(index).padStart(2,'0')}.mp4`);
+  await downloadDriveFile(accessToken,{id:outputId,name:item.outputFileName||item.fileName},inputPath);
+  const duration=await durationSeconds(inputPath); const meanDb=await meanVolumeDb(inputPath); const segment=chooseSegment({duration,meanDb,seed:`${JOB_ID}:${item.fileId}:${item.fileName}`});
+  await run('ffmpeg',['-y','-ss',segment.start.toFixed(3),'-t',segment.length.toFixed(3),'-i',inputPath,'-vf','setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30','-af','asetpts=PTS-STARTPTS','-c:v','libx264','-preset',VIDEO_PRESET,'-crf',COMBINED_VIDEO_CRF,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-avoid_negative_ts','make_zero','-movflags','+faststart',segmentPath]);
+  segmentPaths.push(segmentPath);
+ }
+ if(!segmentPaths.length) return null;
+ const concatList=path.join(workDir,'combined-list.txt');
+ await writeFile(concatList,segmentPaths.map(file=>`file '${file.replace(/'/g,"'\\''")}'`).join('\n'));
+ const combinedPath=path.join(workDir,'combined-marketing-video.mp4');
+ await run('ffmpeg',['-y','-fflags','+genpts','-f','concat','-safe','0','-i',concatList,'-vf','setpts=PTS-STARTPTS,fps=30','-af','asetpts=PTS-STARTPTS','-c:v','libx264','-preset',VIDEO_PRESET,'-crf',COMBINED_VIDEO_CRF,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-avoid_negative_ts','make_zero','-movflags','+faststart',combinedPath]);
+ const uploaded=await uploadDriveFile(accessToken,ctx.marketingFolderId,combinedPath,`${compactGuestName(ctx.episode?.guests)} - מיטב הרגעים.mp4`);
+ await patchJob({combinedVideoUrl:uploaded.webViewLink,combinedVideoName:uploaded.name});
+ return uploaded;
+}
 
 await login();
 const ctx=await api(`/api/marketing-audio-sync/${JOB_ID}/context`);
@@ -87,14 +129,18 @@ for(const item of (job.items||[]).filter(i=>i.status==='rendering' && i.subtitle
   const offset=Number(item.detectedOffsetSeconds);
   if(!Number.isFinite(offset)) throw new Error('חסר offset סנכרון');
   await run('ffmpeg',['-y','-fflags','+genpts','-i',videoPath,'-ss',offset.toFixed(3),'-t',duration.toFixed(3),'-i',audioPath,'-filter_complex','[0:v:0]setpts=PTS-STARTPTS[v];[1:a:0]asetpts=PTS-STARTPTS[a]','-map','[v]','-map','[a]','-c:v','libx264','-preset',VIDEO_PRESET,'-crf',INTERMEDIATE_VIDEO_CRF,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-shortest','-avoid_negative_ts','make_zero','-movflags','+faststart',syncedPath]);
-  await writeFile(srtPath,segmentsToSrt(item.subtitleSegments));
+  const editedSrt=segmentsToSrt(item.subtitleSegments);
+  await writeFile(srtPath,editedSrt);
   await run('ffmpeg',['-y','-i',syncedPath,'-vf',`subtitles='${escapeSubtitlePath(srtPath)}':force_style='Fontname=Arial,Fontsize=11,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1.7,Shadow=0.5,Alignment=2,MarginL=110,MarginR=110,MarginV=38'`,'-c:v','libx264','-preset',VIDEO_PRESET,'-crf',FINAL_VIDEO_CRF,'-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart',outPath]);
-  const uploaded=await uploadDriveFile(ctx.accessToken,ctx.outputFolder.id,outPath,namedOutputName(ctx.episode?.guests,file.name));
+  const clipTitle=await suggestClipTitleFromTranscript(editedSrt).catch(()=> '');
+  const uploaded=await uploadDriveFile(ctx.accessToken,ctx.outputFolder.id,outPath,namedOutputName(ctx.episode?.guests,clipTitle,file.name));
   await patchItem(item.fileId,{status:'completed',message:'סונכרן ורונדר בהצלחה עם הכתוביות שאושרו',outputFileName:uploaded.name,outputFileUrl:uploaded.webViewLink});
  }catch(error){ await patchItem(item.fileId,{status:'failed',message:error instanceof Error?error.message:'שגיאה לא ידועה'}); }
 }
 store=await getStore(); job=(store.marketingAudioSyncJobs||[]).find(j=>j.id===JOB_ID);
 const failed=(job.items||[]).some(i=>i.status==='failed');
+if(!job.combinedVideoUrl) await createCombinedVideo({accessToken:ctx.accessToken,job,ctx,workDir}).catch(error=>console.warn(`combined video skipped: ${error instanceof Error?error.message:error}`));
+store=await getStore(); job=(store.marketingAudioSyncJobs||[]).find(j=>j.id===JOB_ID);
 await patchJob({status:failed?'failed':'completed',finishedAt:new Date().toISOString(),summaryHebrew:summarize(job),unread:true});
 await rm(workDir,{recursive:true,force:true}).catch(()=>{});
 console.log('Done');
