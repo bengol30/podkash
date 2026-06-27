@@ -2,7 +2,6 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import { runMarketingAudioSync } from '../lib/marketing-audio-sync.ts';
 
 const projectRef = process.env.SUPABASE_PROJECT_REF || 'sqsxmvbqabftbmuyutlu';
 const supabaseUrl = process.env.SUPABASE_URL || `https://${projectRef}.supabase.co`;
@@ -62,11 +61,13 @@ await loadLocalSecrets();
 const explicitJobId = process.argv[2];
 const store = await getStore();
 const jobs = store?.marketingAudioSyncJobs || [];
-const job = explicitJobId ? jobs.find(item => item.id === explicitJobId) : jobs.find(item => item.status === 'queued');
+const job = explicitJobId ? jobs.find(item => item.id === explicitJobId) : jobs.find(item => item.status === 'queued' || item.status === 'rendering');
 if (!job) {
-  console.log('No queued marketing audio sync jobs.');
+  console.log('No queued/rendering marketing audio sync jobs.');
   process.exit(0);
 }
-console.log(`Running marketing audio sync job ${job.id} (${job.episodeTitle})`);
-await runMarketingAudioSync(job.id);
+const { continueMarketingAudioSyncAfterSubtitleReview, runMarketingAudioSync } = await import('../lib/marketing-audio-sync.ts');
+console.log(`Running marketing audio sync job ${job.id} (${job.episodeTitle}) status=${job.status}`);
+if (job.status === 'rendering') await continueMarketingAudioSyncAfterSubtitleReview(job.id);
+else await runMarketingAudioSync(job.id);
 console.log(`Finished marketing audio sync job ${job.id}`);

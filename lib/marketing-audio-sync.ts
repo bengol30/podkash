@@ -667,6 +667,26 @@ export async function updateMarketingAudioSyncSubtitles(jobId: string, items: Ar
   await writeStore({ ...store, marketingAudioSyncJobs: jobs });
 }
 
+export async function queueMarketingAudioSyncRendering(jobId: string) {
+  const store = await readStore();
+  const now = new Date().toISOString();
+  const jobs = (store.marketingAudioSyncJobs || []).map(job => {
+    if (job.id !== jobId) return job;
+    return {
+      ...job,
+      status: 'rendering' as const,
+      reviewedAt: job.reviewedAt || now,
+      renderingStartedAt: job.renderingStartedAt || now,
+      finishedAt: undefined,
+      error: undefined,
+      summaryHebrew: `הכתוביות אושרו לפרק “${job.episodeTitle}”. הרינדור הועבר ל־worker המקומי ויתחיל בדקות הקרובות.`,
+      unread: false,
+      items: job.items.map(item => item.subtitleSegments?.length && item.status === 'needs_subtitle_review' ? { ...item, status: 'rendering' as const, message: 'ממתין לרינדור ב־worker המקומי…' } : item),
+    };
+  });
+  await writeStore({ ...store, marketingAudioSyncJobs: jobs });
+}
+
 export async function continueMarketingAudioSyncAfterSubtitleReview(jobId: string) {
   if (activeJobs.has(jobId)) return;
   activeJobs.add(jobId);

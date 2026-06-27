@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { continueMarketingAudioSyncAfterSubtitleReview, updateMarketingAudioSyncSubtitles } from '@/lib/marketing-audio-sync';
+import { continueMarketingAudioSyncAfterSubtitleReview, queueMarketingAudioSyncRendering, updateMarketingAudioSyncSubtitles } from '@/lib/marketing-audio-sync';
 import { readStore } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -34,7 +34,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ jo
     const { jobId } = await context.params;
     const body = await request.json().catch(() => ({}));
     if (Array.isArray(body.items)) await updateMarketingAudioSyncSubtitles(jobId, body.items);
-    await continueMarketingAudioSyncAfterSubtitleReview(jobId);
+    if (process.env.VERCEL) {
+      await queueMarketingAudioSyncRendering(jobId);
+    } else {
+      await continueMarketingAudioSyncAfterSubtitleReview(jobId);
+    }
     const store = await readStore();
     const job = store.marketingAudioSyncJobs?.find(item => item.id === jobId);
     return NextResponse.json({ ok: true, job });
