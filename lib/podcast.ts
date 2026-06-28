@@ -10,11 +10,11 @@ export type PodcastSupabaseStatus = {
 };
 
 const defaultShow = {
-  title: process.env.PODCAST_SHOW_TITLE || 'פודקש',
-  description: process.env.PODCAST_SHOW_DESCRIPTION || 'הפודקאסט של פודקש',
+  title: process.env.PODCAST_SHOW_TITLE || 'אין גבולות עם דנה מיוחס',
+  description: process.env.PODCAST_SHOW_DESCRIPTION || 'הפודקאסט אין גבולות עם דנה מיוחס',
   language: process.env.PODCAST_SHOW_LANGUAGE || 'he',
-  author: process.env.PODCAST_SHOW_AUTHOR || 'Podkash',
-  ownerName: process.env.PODCAST_OWNER_NAME || process.env.PODCAST_SHOW_AUTHOR || 'Podkash',
+  author: process.env.PODCAST_SHOW_AUTHOR || 'דנה מיוחס',
+  ownerName: process.env.PODCAST_OWNER_NAME || process.env.PODCAST_SHOW_AUTHOR || 'דנה מיוחס',
   ownerEmail: process.env.PODCAST_OWNER_EMAIL || 'hello@example.com',
   imageUrl: process.env.PODCAST_SHOW_IMAGE_URL || '',
   category: process.env.PODCAST_SHOW_CATEGORY || 'Business',
@@ -33,16 +33,19 @@ function supabaseConfig() {
   };
 }
 
-export async function getPodcastStatus(): Promise<PodcastSupabaseStatus & { show: typeof defaultShow; feedUrl: string; publishedCount: number; totalCount: number }> {
+export async function getPodcastStatus(): Promise<PodcastSupabaseStatus & { show: typeof defaultShow; feedUrl: string; spotifyShowId: string; spotifyShowUrl: string; publishedCount: number; totalCount: number }> {
   const cfg = supabaseConfig();
   const store = await readStore();
   const base = podcastBaseUrl();
-  const status: PodcastSupabaseStatus & { show: typeof defaultShow; feedUrl: string; publishedCount: number; totalCount: number } = {
+  const spotifyShowId = process.env.PODCAST_SPOTIFY_SHOW_ID || '033eNDxQDdcRftOLpRmv29';
+  const status: PodcastSupabaseStatus & { show: typeof defaultShow; feedUrl: string; spotifyShowId: string; spotifyShowUrl: string; publishedCount: number; totalCount: number } = {
     configured: Boolean(cfg.url && cfg.key),
     bucket: cfg.bucket,
     publicBaseUrl: base,
     show: defaultShow,
     feedUrl: `${base}/api/podcast/spotify/rss`,
+    spotifyShowId,
+    spotifyShowUrl: `https://open.spotify.com/show/${spotifyShowId}`,
     publishedCount: store.podcastEpisodes.filter(isPublicEpisode).length,
     totalCount: store.podcastEpisodes.length,
   };
