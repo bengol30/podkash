@@ -1,6 +1,7 @@
 import { readGoogleDriveTokens, readStore, writeStore } from './db';
 import { refreshGoogleDriveTokensIfNeeded, syncGoogleDriveEpisodes } from './google-drive-sync';
 import { type PodcastEpisode, type PodcastPublishStatus } from './store-types';
+import * as tus from 'tus-js-client';
 
 export type PodcastSupabaseStatus = {
   configured: boolean;
@@ -118,6 +119,17 @@ async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mim
   if (!cfg.url || !cfg.key) throw new Error('Supabase לא מוגדר עדיין');
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'episode.mp3';
   const path = `${new Date().toISOString().slice(0,10)}/${episodeId || crypto.randomUUID()}-${safeName}`;
+  const publicResult = {
+    audioUrl: `${cfg.url}/storage/v1/object/public/${cfg.bucket}/${path}`,
+    audioStoragePath: path,
+    audioFileName: fileName,
+    audioBytes: size,
+    audioMimeType: mimeType || 'audio/mpeg',
+  };
+  if (size > 5 * 1024 * 1024) {
+    await uploadPodcastAudioBytesTus(cfg, bytes, path, mimeType || 'audio/mpeg');
+    return publicResult;
+  }
   const res = await fetch(`${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/${path}`, {
     method: 'POST',
     headers: {
@@ -129,13 +141,35 @@ async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mim
     body: bytes,
   });
   if (!res.ok) throw new Error(`העלאה ל־Supabase נכשלה (${res.status}): ${await res.text()}`);
-  return {
-    audioUrl: `${cfg.url}/storage/v1/object/public/${cfg.bucket}/${path}`,
-    audioStoragePath: path,
-    audioFileName: fileName,
-    audioBytes: size,
-    audioMimeType: mimeType || 'audio/mpeg',
-  };
+  return publicResult;
+}
+
+function uploadPodcastAudioBytesTus(cfg: ReturnType<typeof supabaseConfig>, bytes: ArrayBuffer, path: string, mimeType: string) {
+  const projectRef = cfg.url.match(/^https:\/\/([^.]+)\.supabase\.co$/)?.[1];
+  const endpoint = projectRef ? `https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable` : `${cfg.url}/storage/v1/upload/resumable`;
+  return new Promise<void>((resolve, reject) => {
+    const upload = new tus.Upload(Buffer.from(bytes), {
+      endpoint,
+      chunkSize: 6 * 1024 * 1024,
+      retryDelays: [0, 3000, 5000, 10000, 20000],
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      headers: {
+        authorization: `Bearer ${cfg.key}`,
+        apikey: cfg.key,
+        'x-upsert': 'true',
+      },
+      metadata: {
+        bucketName: cfg.bucket,
+        objectName: path,
+        contentType: mimeType || 'audio/mpeg',
+        cacheControl: '3600',
+      },
+      onError: reject,
+      onSuccess: () => resolve(),
+    });
+    upload.start();
+  });
 }
 
 export async function importPodcastAudioFromDrive(sourceEpisodeId: number, podcastEpisodeId?: string) {
