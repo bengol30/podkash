@@ -763,6 +763,10 @@ function SpotifyPodcastManager({ store, setStore, notice, setNotice }: { store: 
  const [selectedId,setSelectedId]=useState('new');
  const [saving,setSaving]=useState(false);
  const [uploading,setUploading]=useState(false);
+ const [publishLog,setPublishLog]=useState<Array<{ time:string; tone:'info'|'success'|'error'; text:string }>>([]);
+ function addPublishLog(text: string, tone: 'info'|'success'|'error' = 'info') {
+  setPublishLog(log => [...log, { time: new Date().toLocaleTimeString('he-IL', { hour:'2-digit', minute:'2-digit', second:'2-digit' }), tone, text }].slice(-30));
+ }
  const selected=episodes.find(e=>e.id===selectedId) || null;
  const sourceEpisode=selected?.sourceEpisodeId ? store.episodes.find(e=>e.id===selected.sourceEpisodeId) : store.episodes[0];
  const defaults={ title:selected?.title || sourceEpisode?.title || '', description:selected?.description || sourceEpisode?.topic || '', episodeNumber:selected?.episodeNumber || sourceEpisode?.number || '', seasonNumber:selected?.seasonNumber || 1, status:selected?.status || 'draft' as PodcastPublishStatus, scheduledAt:isoToLocal(selected?.scheduledAt), publishedAt:isoToLocal(selected?.publishedAt), audioUrl:selected?.audioUrl || '', imageUrl:selected?.imageUrl || '', spotifyUrl:selected?.spotifyUrl || '', duration:selected?.duration || '', explicit:Boolean(selected?.explicit), sourceEpisodeId:selected?.sourceEpisodeId || sourceEpisode?.id || '' };
@@ -776,27 +780,45 @@ function SpotifyPodcastManager({ store, setStore, notice, setNotice }: { store: 
  function chooseSource(id:string){ const ep=store.episodes.find(e=>String(e.id)===id); if(!ep) return; setSelectedId('new'); window.setTimeout(()=>{ const titleInput=document.querySelector<HTMLInputElement>('input[name="podcastTitle"]'); if(titleInput) titleInput.value=ep.title; },0); }
  async function uploadAudio(file: File, episodeId?: string){
   setUploading(true); setNotice('');
+  addPublishLog(`מעלה אודיו ל־Supabase: ${file.name} (${bytesLabel(file.size)})`);
   try{
    const body=new FormData(); body.set('file',file); if(episodeId) body.set('episodeId',episodeId);
    const res=await fetch('/api/podcast/spotify/upload',{method:'POST',body}); const data=await res.json();
    if(!res.ok || !data.ok) throw new Error(data.message || 'העלאת אודיו נכשלה');
+   addPublishLog(`האודיו עלה בהצלחה: ${data.audioFileName || file.name}`, 'success');
    setNotice(`האודיו עלה ל־Supabase: ${data.audioFileName || file.name}`);
    return data;
+  }catch(error){
+   addPublishLog(error instanceof Error ? error.message : 'העלאת אודיו נכשלה', 'error');
+   throw error;
   }finally{ setUploading(false); }
  }
  async function save(ev: FormEvent<HTMLFormElement>){
-  ev.preventDefault(); const f=ev.currentTarget; setSaving(true); setNotice('');
+  ev.preventDefault(); const f=ev.currentTarget; setSaving(true); setNotice(''); setPublishLog([]);
   try{
+   addPublishLog('מתחיל בדיקות לפני העלאה ל־Spotify / RSS…');
+   if(!storageOk) throw new Error('Supabase Storage לא מחובר — אי אפשר להעלות קובץ אודיו כרגע');
+   const title=field(f,'podcastTitle');
+   if(!title) throw new Error('חסרה כותרת לפרק');
    const file=(f.elements.namedItem('audioFile') as HTMLInputElement)?.files?.[0];
+   const manualAudioUrl=field(f,'audioUrl');
+   if(!file && !manualAudioUrl && !selected?.audioUrl) throw new Error('חסר קובץ אודיו או Audio URL ידני');
+   addPublishLog('הבדיקות עברו — מכין פרק לשמירה');
    let uploaded: Partial<PodcastEpisode> = {};
    const id=selected?.id || crypto.randomUUID();
    if(file) uploaded=await uploadAudio(file,id);
+   else addPublishLog(manualAudioUrl || selected?.audioUrl ? 'משתמש ב־Audio URL קיים/ידני, מדלג על העלאת קובץ' : 'לא נבחר קובץ אודיו');
    const statusValue=field(f,'podcastStatus') as PodcastPublishStatus;
-   const payload: Partial<PodcastEpisode>={ id, sourceEpisodeId:Number(field(f,'sourceEpisodeId')) || undefined, title:field(f,'podcastTitle'), description:field(f,'podcastDescription'), episodeNumber:Number(field(f,'episodeNumber')) || undefined, seasonNumber:Number(field(f,'seasonNumber')) || undefined, status:statusValue, scheduledAt:localToIso(field(f,'scheduledAt')), publishedAt:localToIso(field(f,'publishedAt')) || (statusValue==='published'?new Date().toISOString():undefined), audioUrl:field(f,'audioUrl'), imageUrl:field(f,'imageUrl'), spotifyUrl:field(f,'spotifyUrl'), duration:field(f,'duration'), explicit:field(f,'explicit')==='on', ...uploaded };
+   addPublishLog(statusValue==='published' ? 'שומר כ־Published — הפרק ייכנס מיד ל־RSS' : statusValue==='scheduled' ? 'שומר כמתוזמן — הפרק ייכנס ל־RSS בזמן שנבחר' : 'שומר כטיוטה/ארכיון — הפרק לא יופיע ב־RSS');
+   const payload: Partial<PodcastEpisode>={ id, sourceEpisodeId:Number(field(f,'sourceEpisodeId')) || undefined, title, description:field(f,'podcastDescription'), episodeNumber:Number(field(f,'episodeNumber')) || undefined, seasonNumber:Number(field(f,'seasonNumber')) || undefined, status:statusValue, scheduledAt:localToIso(field(f,'scheduledAt')), publishedAt:localToIso(field(f,'publishedAt')) || (statusValue==='published'?new Date().toISOString():undefined), audioUrl:manualAudioUrl, imageUrl:field(f,'imageUrl'), spotifyUrl:field(f,'spotifyUrl'), duration:field(f,'duration'), explicit:field(f,'explicit')==='on', ...uploaded };
+   addPublishLog('שומר את הפרק במערכת ומעדכן את ה־RSS…');
    const res=await fetch('/api/podcast/spotify/episodes',{method:selected?'PUT':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}); const data=await res.json();
    if(!res.ok || !data.ok) throw new Error(data.message || 'שמירה נכשלה');
-   setSelectedId(data.episode.id); setNotice(statusValue==='scheduled'?'הפרק נשמר וייכנס ל־RSS בזמן התזמון.':'פרק Spotify נשמר.'); await refresh();
-  }catch(error){ setNotice(error instanceof Error ? error.message : 'שמירה נכשלה'); }
+   setSelectedId(data.episode.id);
+   await refresh();
+   addPublishLog(statusValue==='published' ? 'הצלחה: הפרק פורסם ונמצא עכשיו ב־RSS. Spotify יסנכרן אותו לעמוד הפודקאסט.' : statusValue==='scheduled' ? 'הצלחה: הפרק נשמר וייכנס ל־RSS בזמן התזמון.' : 'הצלחה: הפרק נשמר, אבל לא יופיע ב־RSS עד שינוי סטטוס ל־Published/מתוזמן.', 'success');
+   setNotice(statusValue==='scheduled'?'הפרק נשמר וייכנס ל־RSS בזמן התזמון.':'פרק Spotify נשמר.');
+  }catch(error){ const message=error instanceof Error ? error.message : 'שמירה נכשלה'; addPublishLog(message, 'error'); setNotice(message); }
   finally{ setSaving(false); }
  }
  async function remove(id:string){
@@ -811,6 +833,7 @@ function SpotifyPodcastManager({ store, setStore, notice, setNotice }: { store: 
    <div className="panel dark"><h2>Feed וחיבור</h2><div className="list"><div className="row"><span>סטטוס Supabase</span><b>{status?.message || 'בודק…'}</b></div><div className="row"><span>עמוד Spotify מחובר</span><b>{status?.spotifyShowId || '033eNDxQDdcRftOLpRmv29'}</b></div><div className="row"><span>Bucket</span><b>{status?.bucket || 'podcast-audio'}</b></div><div className="row"><span>RSS ל־Spotify</span><code className="inlineCode">{status?.feedUrl || '/api/podcast/spotify/rss'}</code></div><div className="row"><span>פרקים ב־RSS</span><b>{status?.publishedCount ?? 0} מתוך {status?.totalCount ?? episodes.length}</b></div></div><div className="formActions" style={{marginTop:14}}><button className="btn light" type="button" onClick={()=>refresh()}>רענון</button>{status?.feedUrl?<a className="btn gold" href={status.feedUrl} target="_blank" rel="noreferrer">פתיחת RSS</a>:null}{status?.spotifyShowUrl?<a className="btn light" href={status.spotifyShowUrl} target="_blank" rel="noreferrer">פתיחת העמוד בספוטיפיי</a>:null}</div>{!storageOk?<p className="muted" style={{marginTop:14}}>כדי להעלות אודיו צריך ליצור Supabase project נפרד, bucket ציבורי בשם <b>podcast-audio</b>, ולהוסיף env vars ב־Vercel. עד אז אפשר לנהל metadata ולהדביק Audio URL חיצוני ידנית.</p>:null}</div>
    <div className="panel"><h2>פרקים מנוהלים</h2><div className="list">{episodes.length?episodes.map(ep=><button className="row click" key={ep.id} onClick={()=>setSelectedId(ep.id)}><span><b>{ep.title}</b><br/><small className="muted">{bytesLabel(ep.audioBytes)} · {ep.scheduledAt ? cleanDateTime(ep.scheduledAt) : cleanDateTime(ep.publishedAt || ep.createdAt)}</small></span><span className={podcastStatusClass(ep.status)}>{podcastStatusLabels[ep.status]}</span></button>):<p className="muted">עדיין אין פרקים ב־Spotify. צור פרק ראשון מהטופס.</p>}</div><button className="btn dark" style={{marginTop:14}} type="button" onClick={()=>setSelectedId('new')}>+ פרק Spotify חדש</button></div>
    <div className="panel" style={{gridColumn:'1 / -1'}}><h2>{selected?'עריכת פרק Spotify':'יצירת פרק Spotify'}</h2><form className="smartForm" onSubmit={save} key={selected?.id || 'new'}><FormRow label="פרק מקור בפודקש"><select name="sourceEpisodeId" defaultValue={String(defaults.sourceEpisodeId)} onChange={e=>chooseSource(e.target.value)}>{store.episodes.map(e=><option key={e.id} value={e.id}>{`#${e.number} · ${e.title}`}</option>)}</select></FormRow><FormRow label="כותרת"><input name="podcastTitle" defaultValue={defaults.title} required /></FormRow><FormRow label="סטטוס"><select name="podcastStatus" defaultValue={defaults.status}><option value="draft">טיוטה</option><option value="scheduled">מתוזמן</option><option value="published">פורסם</option><option value="archived">ארכיון / מוסתר</option></select></FormRow><FormRow label="תזמון פרסום"><input name="scheduledAt" type="datetime-local" defaultValue={defaults.scheduledAt || nowLocalInput()} /></FormRow><FormRow label="פורסם בפועל"><input name="publishedAt" type="datetime-local" defaultValue={defaults.publishedAt} /></FormRow><FormRow label="מספר פרק"><input name="episodeNumber" type="number" defaultValue={defaults.episodeNumber} /></FormRow><FormRow label="עונה"><input name="seasonNumber" type="number" defaultValue={defaults.seasonNumber} /></FormRow><FormRow label="משך"><input name="duration" placeholder="01:12:30" defaultValue={defaults.duration} /></FormRow><FormRow label="קובץ MP3 ל־Supabase"><input name="audioFile" type="file" accept="audio/*" disabled={!storageOk || uploading} /></FormRow><FormRow label="Audio URL ידני"><input name="audioUrl" type="url" defaultValue={defaults.audioUrl} placeholder="https://...mp3" /></FormRow><FormRow label="תמונת פרק"><input name="imageUrl" type="url" defaultValue={defaults.imageUrl} /></FormRow><FormRow label="קישור Spotify אחרי קליטה"><input name="spotifyUrl" type="url" defaultValue={defaults.spotifyUrl} /></FormRow><label className="checkRow"><input type="checkbox" name="explicit" defaultChecked={defaults.explicit}/> תוכן Explicit</label><label className="formRow wide"><span>תיאור הפרק</span><textarea name="podcastDescription" rows={7} defaultValue={defaults.description} /></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setSelectedId('new')}>נקה</button>{selected?<button className="btn light" type="button" onClick={()=>remove(selected.id)}>מחיקה</button>:null}<button className="btn gold" disabled={saving || uploading}>{uploading?'מעלה אודיו…':saving?'שומר…':'שמירת פרק Spotify'}</button></div></form></div>
+   <div className="panel spotifyPublishLog" style={{gridColumn:'1 / -1'}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center'}}><h2>לוג העלאה לספוטיפיי</h2>{publishLog.length?<button className="miniBtn" type="button" onClick={()=>setPublishLog([])}>נקה לוג</button>:null}</div><div className="list">{publishLog.length?publishLog.map((row,i)=><div className={`row logRow ${row.tone}`} key={`${row.time}-${i}`}><span><b>{row.time}</b><br/><small>{row.text}</small></span><span className={row.tone==='success'?'pill green':row.tone==='error'?'pill red':'pill blue'}>{row.tone==='success'?'הצלחה':row.tone==='error'?'תקלה':'מידע'}</span></div>):<p className="muted">כשתלחץ על שמירת פרק Spotify, יופיע כאן לוג חי של כל שלב — בדיקות, העלאה, עדכון RSS וסנכרון צפוי מול Spotify.</p>}</div></div>
   </div>
  </section>;
 }
