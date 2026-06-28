@@ -8,6 +8,8 @@ const SUBFOLDERS = {
   fullVideo: '02 - הפרק המצולם המלא',
   fullAudio: '03 - קובץ שמע מלא',
 } as const;
+const MARKETING_OUTPUT_FOLDER_NAME = 'סרטונים ערוכים עם סאונד וכתוביות';
+const VIDEO_RE = /\.(mp4|mov|m4v|webm|mkv)$/i;
 
 type DriveFile = {
   id: string;
@@ -91,6 +93,8 @@ async function findFolder(tokens: DriveTokens, name: string, parentId?: string) 
   return result.files?.[0] || null;
 }
 
+export { findFolder as findGoogleDriveFolder };
+
 // Make a folder public: anyone with the link can view AND upload/edit (so the whole
 // team and guests can use it without permission friction). Best-effort — never breaks sync.
 async function makeFolderPublic(tokens: DriveTokens, fileId: string) {
@@ -139,17 +143,22 @@ function folderStatus(files: DriveFile[]) {
   };
 }
 
+function videoFiles(files: DriveFile[]) {
+  return files.filter(file => VIDEO_RE.test(file.name) || (file.mimeType || '').startsWith('video/'));
+}
+
 function updateEpisodeAssets(episode: Episode, data: {
   episodeFolder: DriveFile;
   marketingFolder: DriveFile;
   fullVideoFolder: DriveFile;
   fullAudioFolder: DriveFile;
   marketingFiles: DriveFile[];
+  marketingProcessedFiles: DriveFile[];
   fullVideoFiles: DriveFile[];
   fullAudioFiles: DriveFile[];
 }) {
   const missing: string[] = [];
-  if (!data.marketingFiles.length) missing.push('אין עדיין קבצים בתיקיית סרטוני שיווק');
+  if (!videoFiles(data.marketingFiles).length && !videoFiles(data.marketingProcessedFiles).length) missing.push('אין עדיין קבצים בתיקיית סרטוני שיווק');
   if (!data.fullVideoFiles.length) missing.push('אין עדיין קבצים בתיקיית הפרק המצולם המלא');
   if (!data.fullAudioFiles.length) missing.push('אין עדיין קבצים בתיקיית קובץ השמע המלא');
 
@@ -163,7 +172,8 @@ function updateEpisodeAssets(episode: Episode, data: {
     driveMarketingFolderUrl: data.marketingFolder.webViewLink,
     driveAssetsSyncedAt: new Date().toISOString(),
     driveAssetStatus: {
-      marketing: folderStatus(data.marketingFiles),
+      marketing: folderStatus(videoFiles(data.marketingFiles)),
+      marketingProcessed: folderStatus(videoFiles(data.marketingProcessedFiles)),
       fullVideo: folderStatus(data.fullVideoFiles),
       fullAudio: folderStatus(data.fullAudioFiles),
     },
@@ -221,16 +231,18 @@ export async function syncGoogleDriveEpisodes(options?: { episodeId?: number; st
       listGoogleDriveFolderFiles(tokens, fullVideoFolder.id),
       listGoogleDriveFolderFiles(tokens, fullAudioFolder.id),
     ]);
+    const marketingOutputFolder = await findFolder(tokens, MARKETING_OUTPUT_FOLDER_NAME, marketingFolder.id);
+    const marketingProcessedFiles = marketingOutputFolder ? await listGoogleDriveFolderFiles(tokens, marketingOutputFolder.id) : [];
 
     summaries.push({
       episodeId: episode.id,
       title: episode.title,
       episodeFolderUrl: episodeFolder.webViewLink,
       created,
-      fileCounts: { marketing: marketingFiles.length, fullVideo: fullVideoFiles.length, fullAudio: fullAudioFiles.length },
+      fileCounts: { marketing: videoFiles(marketingFiles).length + videoFiles(marketingProcessedFiles).length, fullVideo: fullVideoFiles.length, fullAudio: fullAudioFiles.length },
     });
 
-    return updateEpisodeAssets(episode, { episodeFolder, marketingFolder, fullVideoFolder, fullAudioFolder, marketingFiles, fullVideoFiles, fullAudioFiles });
+    return updateEpisodeAssets(episode, { episodeFolder, marketingFolder, fullVideoFolder, fullAudioFolder, marketingFiles, marketingProcessedFiles, fullVideoFiles, fullAudioFiles });
   }));
 
   const nextStore: Store = { ...store, episodes: nextEpisodes };

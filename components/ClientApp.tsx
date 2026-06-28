@@ -118,6 +118,9 @@ function latestMarketingAudioJob(jobs: MarketingAudioSyncJob[] | undefined, epis
 
 function marketingAudioStatusFor(episode: Episode, job?: MarketingAudioSyncJob) {
   const status = episode.driveAssetStatus?.marketing;
+  const processed = episode.driveAssetStatus?.marketingProcessed;
+  const processedCount = processed?.fileCount || processed?.files?.length || 0;
+  if (processed?.hasFiles || processedCount > 0) return { tone: 'done', label: `${processedCount || ''}${processedCount ? ' · ' : ''}✓ סונכרן`, title: 'נמצאו ב־Drive סרטונים ערוכים בתיקיית “סרטונים ערוכים עם סאונד וכתוביות”, ולכן הפרק מסומן כסונכרן בפועל.' };
   if (!status) return { tone: 'sync', label: 'לא נבדק', title: 'תיקיית סרטוני השיווק קיימת, אבל עוד לא נבדק מול Drive אם יש בה סרטונים. לחץ כדי לפתוח את אזור הטיפול.' };
   const fileCount = status?.fileCount || status?.files?.length || 0;
   const hasFiles = Boolean(status?.hasFiles || fileCount > 0);

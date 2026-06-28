@@ -27,6 +27,7 @@ export type Episode = typeof episodes[number] & {
   driveAssetsSyncedAt?: string;
   driveAssetStatus?: {
     marketing?: DriveFolderStatus;
+    marketingProcessed?: DriveFolderStatus;
     fullVideo?: DriveFolderStatus;
     fullAudio?: DriveFolderStatus;
   };
