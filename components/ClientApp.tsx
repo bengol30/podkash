@@ -110,6 +110,28 @@ function normalizeStore(input: Partial<Store> | null | undefined): Store {
   };
 }
 
+function latestMarketingAudioJob(jobs: MarketingAudioSyncJob[] | undefined, episodeId: number) {
+  return [...(jobs || [])]
+    .filter(job => job.episodeId === episodeId)
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+}
+
+function marketingAudioStatusFor(episode: Episode, job?: MarketingAudioSyncJob) {
+  const status = episode.driveAssetStatus?.marketing;
+  if (!status) return { tone: 'sync', label: 'לא נבדק', title: 'תיקיית סרטוני השיווק קיימת, אבל עוד לא נבדק מול Drive אם יש בה סרטונים. לחץ כדי לפתוח את אזור הטיפול.' };
+  const fileCount = status?.fileCount || status?.files?.length || 0;
+  const hasFiles = Boolean(status?.hasFiles || fileCount > 0);
+  const countLabel = fileCount ? `${fileCount} · ` : '';
+  if (!hasFiles) return { tone: 'todo', label: 'אין סרטונים', title: 'תיקיית סרטוני השיווק קיימת, אבל לא זוהו בה קבצי וידאו. לחץ כדי לפתוח את התיקייה ולהעלות סרטונים.' };
+  if (!job) return { tone: 'todo', label: `${countLabel}לא סונכרן`, title: 'יש סרטוני שיווק בתיקייה, אבל עוד לא בוצע להם סנכרון סאונד ועיבוד כתוביות.' };
+  if (job.status === 'completed') return { tone: 'done', label: `${countLabel}✓ סונכרן`, title: 'סרטוני השיווק עברו סנכרון סאונד, עיבוד כתוביות ורינדור.' };
+  if (job.status === 'needs_subtitle_review') return { tone: 'todo', label: `${countLabel}כתוביות`, title: 'הסאונד סונכרן והתמלול מוכן — צריך לעבור על הכתוביות לפני רינדור.' };
+  if (job.status === 'rendering') return { tone: 'sync', label: `${countLabel}מרנדר`, title: 'הכתוביות אושרו והסרטונים ברינדור / העלאה ל־Drive.' };
+  if (job.status === 'queued' || job.status === 'running') return { tone: 'sync', label: `${countLabel}בתהליך`, title: 'סנכרון סאונד ותמלול כתוביות בתהליך.' };
+  if (job.status === 'failed') return { tone: 'todo', label: `${countLabel}נכשל`, title: job.error || 'ניסיון סנכרון הסאונד והכתוביות נכשל. לחץ כדי לפתוח את אזור הטיפול.' };
+  return { tone: 'todo', label: `${countLabel}לטיפול`, title: 'יש סרטונים בתיקיית השיווק, וצריך לבדוק את סטטוס הסנכרון והכתוביות.' };
+}
+
 function useStore(initialStore?: Store) {
   const [store, setStore] = useState<Store>(() => initialStore ? normalizeStore(initialStore) : seed);
   const [ready, setReady] = useState(false);
@@ -333,7 +355,11 @@ export function EpisodesClient() {
   }
   const renderRow = (e: Episode, isHost: boolean) => {
     const fv = e.driveAssetStatus?.fullVideo; const fullFolder = e.fullVideoFolderUrl || e.fullVideoUrl; const fullFile = fv?.files?.[0]?.url || fullFolder;
-    const mk = e.driveMarketingFolderUrl || e.shortsDriveFolderUrl; const mkHas = e.driveAssetStatus?.marketing?.hasFiles;
+    const mk = e.driveMarketingFolderUrl || e.shortsDriveFolderUrl; const mkStatus = e.driveAssetStatus?.marketing; const mkHas = Boolean(mkStatus?.hasFiles || mkStatus?.fileCount || mkStatus?.files?.length);
+    const mkJob = latestMarketingAudioJob(store.marketingAudioSyncJobs, e.id);
+    const mkAudioStatus = marketingAudioStatusFor(e, mkJob);
+    const mkTreatmentHref = isHost ? mk : `/episodes/${e.id}#marketing-audio-sync`;
+    const mkGoToTreatment = mkHas || !mkStatus;
     return <div className={`epRow${isHost ? ' hostRow' : ''}`} key={`${isHost ? e.ownerHostId : 'a'}-${e.id}`} onClick={() => isHost ? openHostEp(e) : router.push(`/episodes/${e.id}`)}>
       <span className="epNum">#{e.number}</span>
       <span className="epTitle"><b>{e.title}</b><small>{isHost ? `מאת ${e.ownerName}` : e.topic}</small></span>
@@ -343,7 +369,7 @@ export function EpisodesClient() {
       <span className="epDate">{shortDateTime(e.recording, e.recordingAt)}</span>
       <span className="epDate">{shortDateTime(e.publish)}</span>
       <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{fv?.hasFiles && fullFile ? <a className="epAsset done" href={fullFile} target="_blank" rel="noreferrer">✓ צפה</a> : fullFolder ? <a className="epAsset todo" href={fullFolder} target="_blank" rel="noreferrer">↑ העלה</a> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id, isHost ? e.ownerHostId : undefined)}>צור</button>}</span>
-      <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{mk ? <a className={`epAsset ${mkHas ? 'done' : 'todo'}`} href={mk} target="_blank" rel="noreferrer">{mkHas ? '✓ סרטונים' : 'סרטונים'}</a> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id, isHost ? e.ownerHostId : undefined)}>צור</button>}</span>
+      <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{mk ? <a className={`epAsset ${mkAudioStatus.tone}`} href={mkGoToTreatment && mkTreatmentHref ? mkTreatmentHref : mk} target={mkGoToTreatment && !isHost ? undefined : '_blank'} rel={mkGoToTreatment && !isHost ? undefined : 'noreferrer'} title={mkAudioStatus.title}>{mkAudioStatus.label}</a> : <button className="epAsset sync" type="button" onClick={() => syncEpisodeDrive(e.id, isHost ? e.ownerHostId : undefined)}>צור</button>}</span>
       <span className="epAssetCell" onClick={ev => ev.stopPropagation()}>{e.youtubeUrl
         ? <a className="epAsset done" href={e.youtubeUrl} target="_blank" rel="noreferrer">✓ ביוטיוב</a>
         : <button className="epAsset todo" type="button" disabled={ytUploading===`${isHost ? e.ownerHostId : 'a'}-${e.id}`} onClick={() => uploadEpisodeToYoutube(e, isHost)}>{ytUploading===`${isHost ? e.ownerHostId : 'a'}-${e.id}` ? 'מעלה…' : '↑ העלה'}</button>}</span>
@@ -605,7 +631,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
     <section className="grid three" style={{marginTop:16}}>
       <div className="panel"><h2>תיאום</h2><p className="muted">{ep.coordinationNote || 'אין עדיין הערות תיאום לפרק הזה.'}</p>{sessions.length ? sessions.map((ss,i)=><div className="row" key={i}><span>{ss.studio}</span><span className="pill">{cleanDateTime(ss.time)}</span></div>) : <Link className="btn light" href="/production">קבע סשן צילום</Link>}</div>
       <div className="panel"><h2>משימות</h2><div className="list">{episodeTasks.length ? episodeTasks.map((t,i)=><button className="row click" key={`${t.title}-${i}`} onClick={()=>toggleTask(i)}><span>{t.title}<br/><small className="muted">{t.owner} · {t.type}</small></span><span className={t.status==='בוצע'?'pill green':'pill red'}>{t.status} · {cleanDateTime(t.due)}</span></button>) : <p className="muted">אין עדיין משימות לפרק. אפשר להוסיף מכאן.</p>}</div></div>
-      <div className="panel"><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'start',marginBottom:10}}><div><h2>נכסים</h2><p className="muted">כל הקישורים החשובים של הפרק במקום אחד: Drive, YouTube, Spotify וקליפים להפצה.</p>{ep.driveAssetsSyncedAt ? <p className="muted">סונכרן מול Drive: {cleanDateTime(ep.driveAssetsSyncedAt)}</p> : null}</div><button className="miniBtn" onClick={()=>setAssetsOpen(true)}>עריכת נכסים</button></div><div className="audioSyncBox"><div><b>סאונד וכתוביות לסרטוני שיווק</b><p className="muted">מוריד את סרטוני השיווק ואת האודיו הרשמי, מסנכרן לפי הסאונד המקורי, מתמלל ב־OpenAI ואז עוצר לעריכת כתוביות חובה לפני צריבה, רינדור והעלאה ל־Drive.</p>{latestAudioSyncJob ? <small className="muted">סטטוס אחרון: {audioSyncStatusLabel(latestAudioSyncJob)}{latestAudioSyncJob.finishedAt ? ` · ${cleanDateTime(latestAudioSyncJob.finishedAt)}` : ''}</small> : null}</div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'end'}}><button className="btn gold" onClick={startMarketingAudioSync} disabled={startingAudioSync || latestAudioSyncJob?.status === 'running' || latestAudioSyncJob?.status === 'queued' || latestAudioSyncJob?.status === 'rendering'}>{startingAudioSync ? 'מפעיל…' : 'חיבור סאונד וכתוביות'}</button>{latestAudioSyncHasEditableSubtitles ? <button className="btn dark" onClick={()=>setSubtitleJob(latestAudioSyncJob)}>עריכת כתוביות</button> : null}{latestAudioSyncJob?.summaryHebrew ? <button className="btn light" onClick={()=>setJobSummaryOpen(latestAudioSyncJob)}>סיכום אחרון</button> : null}</div></div><div className="list">{assetLinks.map(asset=>asset.value ? <a className="row click assetLinkRow" key={asset.key} href={asset.value} target="_blank" rel="noreferrer"><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'end'}}>{assetStatusPill(asset.status)}<span className="pill green">פתח</span></span></a> : <button className="row click assetLinkRow" key={asset.key} onClick={()=>setAssetsOpen(true)}><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span className="pill red">להוסיף</span></button>)}</div>{ep.assetsNote ? <p className="muted" style={{margin:'14px 0 0'}}>{ep.assetsNote}</p> : null}</div>
+      <div className="panel"><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'start',marginBottom:10}}><div><h2>נכסים</h2><p className="muted">כל הקישורים החשובים של הפרק במקום אחד: Drive, YouTube, Spotify וקליפים להפצה.</p>{ep.driveAssetsSyncedAt ? <p className="muted">סונכרן מול Drive: {cleanDateTime(ep.driveAssetsSyncedAt)}</p> : null}</div><button className="miniBtn" onClick={()=>setAssetsOpen(true)}>עריכת נכסים</button></div><div id="marketing-audio-sync" className="audioSyncBox"><div><b>סאונד וכתוביות לסרטוני שיווק</b><p className="muted">מוריד את סרטוני השיווק ואת האודיו הרשמי, מסנכרן לפי הסאונד המקורי, מתמלל ב־OpenAI ואז עוצר לעריכת כתוביות חובה לפני צריבה, רינדור והעלאה ל־Drive.</p>{latestAudioSyncJob ? <small className="muted">סטטוס אחרון: {audioSyncStatusLabel(latestAudioSyncJob)}{latestAudioSyncJob.finishedAt ? ` · ${cleanDateTime(latestAudioSyncJob.finishedAt)}` : ''}</small> : null}</div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'end'}}><button className="btn gold" onClick={startMarketingAudioSync} disabled={startingAudioSync || latestAudioSyncJob?.status === 'running' || latestAudioSyncJob?.status === 'queued' || latestAudioSyncJob?.status === 'rendering'}>{startingAudioSync ? 'מפעיל…' : 'חיבור סאונד וכתוביות'}</button>{latestAudioSyncHasEditableSubtitles ? <button className="btn dark" onClick={()=>setSubtitleJob(latestAudioSyncJob)}>עריכת כתוביות</button> : null}{latestAudioSyncJob?.summaryHebrew ? <button className="btn light" onClick={()=>setJobSummaryOpen(latestAudioSyncJob)}>סיכום אחרון</button> : null}</div></div><div className="list">{assetLinks.map(asset=>asset.value ? <a className="row click assetLinkRow" key={asset.key} href={asset.value} target="_blank" rel="noreferrer"><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'end'}}>{assetStatusPill(asset.status)}<span className="pill green">פתח</span></span></a> : <button className="row click assetLinkRow" key={asset.key} onClick={()=>setAssetsOpen(true)}><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span className="pill red">להוסיף</span></button>)}</div>{ep.assetsNote ? <p className="muted" style={{margin:'14px 0 0'}}>{ep.assetsNote}</p> : null}</div>
     </section>
     <section className="grid two" style={{marginTop:16}}>
       <div className="panel"><h2>הפצה</h2>{episodePlatforms.length ? <div className="table">{episodePlatforms.map(p=><div className="tableRow" key={p.name}><strong>{p.name}</strong><span>{p.asset}</span><span>{p.link}</span><span className="pill">{p.status}</span></div>)}</div> : <p className="muted">עדיין אין פריטי הפצה לפרק הזה.</p>}</div>
