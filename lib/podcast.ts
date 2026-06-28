@@ -1,4 +1,5 @@
-import { readStore, writeStore } from './db';
+import { readGoogleDriveTokens, readStore, writeStore } from './db';
+import { refreshGoogleDriveTokensIfNeeded, syncGoogleDriveEpisodes } from './google-drive-sync';
 import { type PodcastEpisode, type PodcastPublishStatus } from './store-types';
 
 export type PodcastSupabaseStatus = {
@@ -109,17 +110,20 @@ export async function deletePodcastEpisode(id: string) {
 }
 
 export async function uploadPodcastAudio(file: File, episodeId?: string) {
+  return uploadPodcastAudioBytes(await file.arrayBuffer(), file.name, file.type || 'audio/mpeg', file.size, episodeId);
+}
+
+async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mimeType: string, size: number, episodeId?: string) {
   const cfg = supabaseConfig();
   if (!cfg.url || !cfg.key) throw new Error('Supabase לא מוגדר עדיין');
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'episode.mp3';
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'episode.mp3';
   const path = `${new Date().toISOString().slice(0,10)}/${episodeId || crypto.randomUUID()}-${safeName}`;
-  const bytes = await file.arrayBuffer();
   const res = await fetch(`${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/${path}`, {
     method: 'POST',
     headers: {
       apikey: cfg.key,
       authorization: `Bearer ${cfg.key}`,
-      'content-type': file.type || 'audio/mpeg',
+      'content-type': mimeType || 'audio/mpeg',
       'x-upsert': 'true',
     },
     body: bytes,
@@ -128,10 +132,32 @@ export async function uploadPodcastAudio(file: File, episodeId?: string) {
   return {
     audioUrl: `${cfg.url}/storage/v1/object/public/${cfg.bucket}/${path}`,
     audioStoragePath: path,
-    audioFileName: file.name,
-    audioBytes: file.size,
-    audioMimeType: file.type || 'audio/mpeg',
+    audioFileName: fileName,
+    audioBytes: size,
+    audioMimeType: mimeType || 'audio/mpeg',
   };
+}
+
+export async function importPodcastAudioFromDrive(sourceEpisodeId: number, podcastEpisodeId?: string) {
+  if (!Number.isFinite(sourceEpisodeId)) throw new Error('חסר פרק מקור לייבוא אודיו מ־Drive');
+  await syncGoogleDriveEpisodes({ episodeId: sourceEpisodeId });
+  const store = await readStore();
+  const episode = store.episodes.find(ep => ep.id === sourceEpisodeId);
+  if (!episode) throw new Error('פרק המקור לא נמצא במערכת');
+  const file = episode.driveAssetStatus?.fullAudio?.files?.[0];
+  if (!file?.id) throw new Error('לא נמצא קובץ אודיו רשמי בתיקיית “קובץ שמע מלא” של הפרק. העלה לשם MP3/WAV ואז נסה שוב.');
+  const rawTokens = await readGoogleDriveTokens();
+  if (!rawTokens) throw new Error('Google Drive לא מחובר');
+  const { tokens } = await refreshGoogleDriveTokensIfNeeded(rawTokens);
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`, {
+    headers: { authorization: `Bearer ${tokens.accessToken}` },
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`הורדת האודיו מ־Drive נכשלה (${res.status}): ${await res.text()}`);
+  const bytes = await res.arrayBuffer();
+  const mimeType = res.headers.get('content-type') || file.mimeType || 'audio/mpeg';
+  const fileName = file.name || `${episode.title}.mp3`;
+  return { sourceFileName: fileName, sourceFileUrl: file.url, ...(await uploadPodcastAudioBytes(bytes, fileName, mimeType, bytes.byteLength, podcastEpisodeId || `episode-${sourceEpisodeId}`)) };
 }
 
 export function isPublicEpisode(ep: PodcastEpisode) {
