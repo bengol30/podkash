@@ -10,11 +10,11 @@ export type PodcastSupabaseStatus = {
 };
 
 const defaultShow = {
-  title: process.env.PODCAST_SHOW_TITLE || 'אין גבולות עם דנה מיוחס',
-  description: process.env.PODCAST_SHOW_DESCRIPTION || 'הפודקאסט אין גבולות עם דנה מיוחס',
+  title: process.env.PODCAST_SHOW_TITLE || 'פודקש - הפודקאסט של צעירי קרית שמונה',
+  description: process.env.PODCAST_SHOW_DESCRIPTION || 'הפודקאסט של צעירי קרית שמונה',
   language: process.env.PODCAST_SHOW_LANGUAGE || 'he',
-  author: process.env.PODCAST_SHOW_AUTHOR || 'דנה מיוחס',
-  ownerName: process.env.PODCAST_OWNER_NAME || process.env.PODCAST_SHOW_AUTHOR || 'דנה מיוחס',
+  author: process.env.PODCAST_SHOW_AUTHOR || 'פודקש',
+  ownerName: process.env.PODCAST_OWNER_NAME || process.env.PODCAST_SHOW_AUTHOR || 'פודקש',
   ownerEmail: process.env.PODCAST_OWNER_EMAIL || 'hello@example.com',
   imageUrl: process.env.PODCAST_SHOW_IMAGE_URL || '',
   category: process.env.PODCAST_SHOW_CATEGORY || 'Business',
