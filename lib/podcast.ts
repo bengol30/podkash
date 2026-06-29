@@ -2,11 +2,11 @@ import { readGoogleDriveTokens, readStore, writeStore } from './db';
 import { refreshGoogleDriveTokensIfNeeded, syncGoogleDriveEpisodes } from './google-drive-sync';
 import { type PodcastEpisode, type PodcastPublishStatus } from './store-types';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { promisify } from 'node:util';
-import ffmpegStatic from 'ffmpeg-static';
 import * as tus from 'tus-js-client';
 
 const execFileAsync = promisify(execFile);
@@ -147,7 +147,7 @@ async function preparePodcastAudio(bytes: ArrayBuffer, fileName: string, mimeTyp
     return { bytes, fileName, mimeType: mimeType || 'audio/mpeg', size };
   }
 
-  const ffmpegPath = process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg';
+  const ffmpegPath = findFfmpegPath();
   const dir = await mkdtemp(join(tmpdir(), 'podkash-podcast-audio-'));
   const inputExt = extname(fileName) || '.audio';
   const inputPath = join(dir, `source${inputExt}`);
@@ -179,6 +179,14 @@ async function preparePodcastAudio(bytes: ArrayBuffer, fileName: string, mimeTyp
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+function findFfmpegPath() {
+  const bundledFfmpegPath = join(process.cwd(), 'node_modules', '@ffmpeg-installer', 'linux-x64', 'ffmpeg');
+  const candidates = [process.env.FFMPEG_PATH, bundledFfmpegPath, '/usr/bin/ffmpeg', '/bin/ffmpeg', 'ffmpeg'].filter(Boolean) as string[];
+  const found = candidates.find(candidate => candidate === 'ffmpeg' || existsSync(candidate));
+  if (!found) throw new Error('לא נמצא ffmpeg על השרת');
+  return found;
 }
 
 async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mimeType: string, size: number, episodeId?: string) {
