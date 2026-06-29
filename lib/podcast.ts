@@ -1,7 +1,21 @@
 import { readGoogleDriveTokens, readStore, writeStore } from './db';
 import { refreshGoogleDriveTokensIfNeeded, syncGoogleDriveEpisodes } from './google-drive-sync';
 import { type PodcastEpisode, type PodcastPublishStatus } from './store-types';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, extname, join } from 'node:path';
+import { promisify } from 'node:util';
+import ffmpegStatic from 'ffmpeg-static';
 import * as tus from 'tus-js-client';
+
+const execFileAsync = promisify(execFile);
+
+const PODCAST_AUDIO_BITRATE = process.env.PODCAST_AUDIO_BITRATE || '96k';
+const PODCAST_AUDIO_THRESHOLD_MB = Number(process.env.PODCAST_AUDIO_TRANSCODE_THRESHOLD_MB || 40);
+const PODCAST_AUDIO_THRESHOLD_BYTES = Number.isFinite(PODCAST_AUDIO_THRESHOLD_MB) && PODCAST_AUDIO_THRESHOLD_MB > 0
+  ? PODCAST_AUDIO_THRESHOLD_MB * 1024 * 1024
+  : 40 * 1024 * 1024;
 
 export type PodcastSupabaseStatus = {
   configured: boolean;
@@ -111,7 +125,60 @@ export async function deletePodcastEpisode(id: string) {
 }
 
 export async function uploadPodcastAudio(file: File, episodeId?: string) {
-  return uploadPodcastAudioBytes(await file.arrayBuffer(), file.name, file.type || 'audio/mpeg', file.size, episodeId);
+  const audio = await preparePodcastAudio(await file.arrayBuffer(), file.name, file.type || 'audio/mpeg', file.size);
+  return uploadPodcastAudioBytes(audio.bytes, audio.fileName, audio.mimeType, audio.size, episodeId);
+}
+
+function isMp3Audio(fileName: string, mimeType: string) {
+  const ext = extname(fileName).toLowerCase();
+  const mime = mimeType.toLowerCase();
+  return ext === '.mp3' || mime === 'audio/mpeg' || mime === 'audio/mp3';
+}
+
+function podcastMp3Name(fileName: string) {
+  const ext = extname(fileName);
+  const base = basename(fileName, ext).replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '') || 'episode';
+  return `${base}-podcast.mp3`;
+}
+
+async function preparePodcastAudio(bytes: ArrayBuffer, fileName: string, mimeType: string, size: number) {
+  const disabled = process.env.PODCAST_AUDIO_TRANSCODE === 'false';
+  if (disabled || (isMp3Audio(fileName, mimeType) && size <= PODCAST_AUDIO_THRESHOLD_BYTES)) {
+    return { bytes, fileName, mimeType: mimeType || 'audio/mpeg', size };
+  }
+
+  const ffmpegPath = process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg';
+  const dir = await mkdtemp(join(tmpdir(), 'podkash-podcast-audio-'));
+  const inputExt = extname(fileName) || '.audio';
+  const inputPath = join(dir, `source${inputExt}`);
+  const outputPath = join(dir, 'podcast.mp3');
+
+  try {
+    await writeFile(inputPath, Buffer.from(bytes));
+    await execFileAsync(ffmpegPath, [
+      '-y',
+      '-i', inputPath,
+      '-vn',
+      '-ac', '1',
+      '-ar', '44100',
+      '-codec:a', 'libmp3lame',
+      '-b:a', PODCAST_AUDIO_BITRATE,
+      '-compression_level', '2',
+      outputPath,
+    ], { maxBuffer: 10 * 1024 * 1024 });
+    const [outBytes, outStat] = await Promise.all([readFile(outputPath), stat(outputPath)]);
+    return {
+      bytes: outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset + outBytes.byteLength),
+      fileName: podcastMp3Name(fileName),
+      mimeType: 'audio/mpeg',
+      size: outStat.size,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`כיווץ האודיו ל־MP3 נכשל: ${message}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mimeType: string, size: number, episodeId?: string) {
@@ -191,7 +258,8 @@ export async function importPodcastAudioFromDrive(sourceEpisodeId: number, podca
   const bytes = await res.arrayBuffer();
   const mimeType = res.headers.get('content-type') || file.mimeType || 'audio/mpeg';
   const fileName = file.name || `${episode.title}.mp3`;
-  return { sourceFileName: fileName, sourceFileUrl: file.url, ...(await uploadPodcastAudioBytes(bytes, fileName, mimeType, bytes.byteLength, podcastEpisodeId || `episode-${sourceEpisodeId}`)) };
+  const audio = await preparePodcastAudio(bytes, fileName, mimeType, bytes.byteLength);
+  return { sourceFileName: fileName, sourceFileUrl: file.url, ...(await uploadPodcastAudioBytes(audio.bytes, audio.fileName, audio.mimeType, audio.size, podcastEpisodeId || `episode-${sourceEpisodeId}`)) };
 }
 
 export function isPublicEpisode(ep: PodcastEpisode) {
