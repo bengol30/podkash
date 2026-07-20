@@ -17,8 +17,9 @@ const AUDIO_RE = /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i;
 const INTERMEDIATE_VIDEO_CRF = process.env.PODKASH_INTERMEDIATE_VIDEO_CRF || '16';
 const FINAL_VIDEO_CRF = process.env.PODKASH_FINAL_VIDEO_CRF || '18';
 const VIDEO_PRESET = process.env.PODKASH_VIDEO_PRESET || 'medium';
-const SUBTITLE_END_PADDING_MS = Number(process.env.PODKASH_SUBTITLE_END_PADDING_MS || '1200');
-const PREVIEW_AUDIO_TAIL_PADDING_MS = Number(process.env.PODKASH_PREVIEW_AUDIO_TAIL_PADDING_MS || '1500');
+const SUBTITLE_END_PADDING_MS = Number(process.env.PODKASH_SUBTITLE_END_PADDING_MS || '180');
+const PREVIEW_AUDIO_HEAD_PADDING_MS = Number(process.env.PODKASH_PREVIEW_AUDIO_HEAD_PADDING_MS || '40');
+const PREVIEW_AUDIO_TAIL_PADDING_MS = Number(process.env.PODKASH_PREVIEW_AUDIO_TAIL_PADDING_MS || '180');
 const activeJobs = new Set<string>();
 
 function folderIdFromUrl(value?: string) {
@@ -124,9 +125,9 @@ async function uploadDriveFile(tokens: DriveTokens, folderId: string, filePath: 
 }
 
 async function extractPreviewAudio(inputAudioPath: string, outputAudioPath: string, startMs: number, endMs: number) {
-  const start = Math.max(0, startMs / 1000);
+  const start = Math.max(0, (startMs - Math.max(0, PREVIEW_AUDIO_HEAD_PADDING_MS)) / 1000);
   const paddedEndMs = endMs + Math.max(0, PREVIEW_AUDIO_TAIL_PADDING_MS);
-  const duration = Math.max(0.5, (paddedEndMs - startMs) / 1000);
+  const duration = Math.max(0.5, (paddedEndMs - Math.max(0, startMs - Math.max(0, PREVIEW_AUDIO_HEAD_PADDING_MS))) / 1000);
   await run('ffmpeg', ['-y', '-ss', start.toFixed(3), '-t', duration.toFixed(3), '-i', inputAudioPath, '-vn', '-ac', '1', '-ar', '24000', '-b:a', '80k', outputAudioPath]);
 }
 
@@ -176,37 +177,96 @@ function escapeSubtitlePath(filePath: string) {
   return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'").replace(/,/g, '\\,');
 }
 
+type OpenAiTranscriptionWord = { word?: string; text?: string; start?: number; end?: number };
+type OpenAiTranscriptionSegment = { text?: string; start?: number; end?: number };
+
+function preciseWordsToSrt(words: OpenAiTranscriptionWord[]) {
+  const normalized = words
+    .map(word => ({
+      text: normalizeHebrewCaptionText(String(word.word || word.text || '').replace(/^[\s.,!?;:]+|[\s.,!?;:]+$/g, match => match.trim() && /[.,!?;:]/.test(match) ? match : '').trim()),
+      startMs: Math.round(Number(word.start) * 1000),
+      endMs: Math.round(Number(word.end) * 1000),
+    }))
+    .filter(word => word.text && Number.isFinite(word.startMs) && Number.isFinite(word.endMs) && word.endMs > word.startMs);
+  if (!normalized.length) return '';
+
+  const chunks: Array<{ startMs: number; endMs: number; text: string }> = [];
+  let current: typeof normalized = [];
+  const flush = () => {
+    if (!current.length) return;
+    chunks.push({ startMs: current[0].startMs, endMs: current[current.length - 1].endMs, text: normalizeHebrewCaptionText(current.map(word => word.text).join(' ')) });
+    current = [];
+  };
+
+  for (const word of normalized) {
+    const previous = current[current.length - 1];
+    const silenceGap = previous ? word.startMs - previous.endMs : 0;
+    if (current.length && silenceGap > 520) flush();
+    current.push(word);
+    const text = current.map(item => item.text).join(' ');
+    const duration = current[current.length - 1].endMs - current[0].startMs;
+    const endsSentence = /[.!?؟…]$/.test(word.text);
+    const tooLong = current.length >= 8 || (current.length >= 5 && duration >= 3200);
+    if ((endsSentence && current.length >= 2) || tooLong) flush();
+  }
+  flush();
+
+  return chunks.map((chunk, index) => {
+    const nextStart = chunks[index + 1]?.startMs;
+    const paddedEnd = chunk.endMs + Math.max(0, SUBTITLE_END_PADDING_MS);
+    const end = Number.isFinite(nextStart) ? Math.min(paddedEnd, Math.max(chunk.endMs, nextStart - 40)) : paddedEnd;
+    return `${index + 1}\n${msToSrtTime(chunk.startMs)} --> ${msToSrtTime(Math.max(end, chunk.startMs + 450))}\n${splitCaptionLine(chunk.text)}`;
+  }).join('\n\n') + '\n';
+}
+
+function segmentJsonToSrt(segments: OpenAiTranscriptionSegment[]) {
+  const output = segments
+    .map(segment => ({ startMs: Math.round(Number(segment.start) * 1000), endMs: Math.round(Number(segment.end) * 1000), text: normalizeHebrewCaptionText(String(segment.text || '')) }))
+    .filter(segment => segment.text && Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs) && segment.endMs > segment.startMs)
+    .map((segment, index) => `${index + 1}\n${msToSrtTime(segment.startMs)} --> ${msToSrtTime(segment.endMs)}\n${splitCaptionLine(segment.text)}`);
+  return output.length ? output.join('\n\n') + '\n' : '';
+}
+
+async function requestOpenAiTranscription(bytes: Buffer, inputAudioPath: string, model: string, responseFormat: 'srt' | 'verbose_json') {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('חסר OPENAI_API_KEY ליצירת כתוביות');
+  const form = new FormData();
+  form.append('file', new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer], { type: 'audio/mpeg' }), path.basename(inputAudioPath));
+  form.append('model', model);
+  form.append('response_format', responseFormat);
+  if (responseFormat === 'verbose_json') form.append('timestamp_granularities[]', 'word');
+  form.append('language', 'he');
+  form.append('prompt', 'תמלול עברית מדויק לפודקאסט/ראיון. חשוב מאוד: שמור גבולות משפטים לפי הדיבור בפועל, בלי להכניס מילים ממשפט קודם או הבא. שמור שמות, מונחים מקצועיים, מספרים וסלנג ישראלי בצורה טבעית.');
+  return fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+}
+
 async function transcribeToSrt(inputAudioPath: string, outputSrtPath: string) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('חסר OPENAI_API_KEY ליצירת כתוביות');
 
   const bytes = await readFile(inputAudioPath);
-  const form = new FormData();
-  form.append('file', new Blob([bytes], { type: 'audio/mpeg' }), path.basename(inputAudioPath));
-  form.append('model', process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-transcribe');
-  form.append('response_format', 'srt');
-  form.append('language', 'he');
-  form.append('prompt', 'תמלול עברית מדויק לפודקאסט/ראיון. שמור שמות, מונחים מקצועיים, מספרים וסלנג ישראלי בצורה טבעית.');
+  const primaryModel = process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-transcribe';
+  const models = primaryModel === 'whisper-1' ? ['whisper-1'] : [primaryModel, 'whisper-1'];
 
-  let res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { authorization: `Bearer ${apiKey}` },
-    body: form,
-  });
-
-  if (!res.ok && (process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-transcribe') !== 'whisper-1') {
-    const fallback = new FormData();
-    fallback.append('file', new Blob([bytes], { type: 'audio/mpeg' }), path.basename(inputAudioPath));
-    fallback.append('model', 'whisper-1');
-    fallback.append('response_format', 'srt');
-    fallback.append('language', 'he');
-    fallback.append('prompt', 'תמלול עברית מדויק לפודקאסט/ראיון. שמור שמות, מונחים מקצועיים, מספרים וסלנג ישראלי בצורה טבעית.');
-    res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${apiKey}` },
-      body: fallback,
-    });
+  for (const model of models) {
+    const precise = await requestOpenAiTranscription(bytes, inputAudioPath, model, 'verbose_json').catch(() => null);
+    if (precise?.ok) {
+      const json = await precise.json().catch(() => ({})) as { words?: OpenAiTranscriptionWord[]; segments?: OpenAiTranscriptionSegment[] };
+      const readable = preciseWordsToSrt(Array.isArray(json.words) ? json.words : []) || segmentJsonToSrt(Array.isArray(json.segments) ? json.segments : []);
+      if (readable.trim()) {
+        await writeFile(outputSrtPath, readable);
+        return readable;
+      }
+    }
   }
+
+  let res = await requestOpenAiTranscription(bytes, inputAudioPath, primaryModel, 'srt');
+
+  if (!res.ok && primaryModel !== 'whisper-1') res = await requestOpenAiTranscription(bytes, inputAudioPath, 'whisper-1', 'srt');
 
   const text = await res.text();
   if (!res.ok) throw new Error(`תמלול OpenAI נכשל (${res.status}): ${text.slice(0, 500)}`);
