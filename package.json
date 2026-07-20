@@ -18,6 +18,7 @@
     "postgres": "^3.4.9",
     "react": "latest",
     "react-dom": "latest",
+    "sharp": "^0.35.3",
     "tus-js-client": "^4.3.1",
     "typescript": "latest"
   }

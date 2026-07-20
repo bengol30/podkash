@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { promisify } from 'node:util';
+import sharp from 'sharp';
 import * as tus from 'tus-js-client';
 
 const execFileAsync = promisify(execFile);
@@ -16,6 +17,8 @@ const PODCAST_AUDIO_THRESHOLD_MB = Number(process.env.PODCAST_AUDIO_TRANSCODE_TH
 const PODCAST_AUDIO_THRESHOLD_BYTES = Number.isFinite(PODCAST_AUDIO_THRESHOLD_MB) && PODCAST_AUDIO_THRESHOLD_MB > 0
   ? PODCAST_AUDIO_THRESHOLD_MB * 1024 * 1024
   : 40 * 1024 * 1024;
+const PODCAST_IMAGE_SIZE = 3000;
+const PODCAST_IMAGE_MAX_BYTES = 15 * 1024 * 1024;
 
 export type PodcastSupabaseStatus = {
   configured: boolean;
@@ -129,6 +132,51 @@ export async function uploadPodcastAudio(file: File, episodeId?: string) {
   return uploadPodcastAudioBytes(audio.bytes, audio.fileName, audio.mimeType, audio.size, episodeId);
 }
 
+export async function uploadPodcastImage(file: File, episodeId?: string) {
+  if (!file.type.toLowerCase().startsWith('image/')) throw new Error('אפשר להעלות רק קובץ תמונה');
+  if (file.size > PODCAST_IMAGE_MAX_BYTES) throw new Error('התמונה גדולה מדי. מומלץ עד 15MB לפני עיבוד.');
+  const bytes = await preparePodcastImage(await file.arrayBuffer(), file.name);
+  const safeEpisodeId = episodeId || crypto.randomUUID();
+  const safeBase = basename(file.name, extname(file.name)).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'cover';
+  const path = `podcast-images/${new Date().toISOString().slice(0,10)}/${safeEpisodeId}-${safeBase}-3000.jpg`;
+  const result = await uploadPodcastAssetBytes(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), path, 'image/jpeg');
+  return {
+    imageUrl: result.publicUrl,
+    imageStoragePath: path,
+    imageFileName: `${safeBase}-3000.jpg`,
+    imageBytes: bytes.byteLength,
+    imageMimeType: 'image/jpeg',
+  };
+}
+
+async function preparePodcastImage(bytes: ArrayBuffer, fileName: string) {
+  let image = sharp(Buffer.from(bytes), { failOn: 'none' }).rotate().toColorspace('srgb');
+  const meta = await image.metadata();
+  if (!meta.width || !meta.height) throw new Error(`התמונה “${fileName}” לא נקראה כקובץ תמונה תקין`);
+
+  if (meta.width === meta.height) {
+    return image.resize(PODCAST_IMAGE_SIZE, PODCAST_IMAGE_SIZE, { fit: 'cover' }).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+  }
+
+  const input = Buffer.from(bytes);
+  const background = await sharp(input, { failOn: 'none' })
+    .rotate()
+    .resize(PODCAST_IMAGE_SIZE, PODCAST_IMAGE_SIZE, { fit: 'cover' })
+    .blur(28)
+    .modulate({ brightness: 0.82, saturation: 1.05 })
+    .jpeg({ quality: 90, mozjpeg: true })
+    .toBuffer();
+  const foreground = await sharp(input, { failOn: 'none' })
+    .rotate()
+    .resize(PODCAST_IMAGE_SIZE, PODCAST_IMAGE_SIZE, { fit: 'contain', withoutEnlargement: false })
+    .png()
+    .toBuffer();
+  return sharp(background)
+    .composite([{ input: foreground, gravity: 'center' }])
+    .jpeg({ quality: 90, mozjpeg: true })
+    .toBuffer();
+}
+
 function isMp3Audio(fileName: string, mimeType: string) {
   const ext = extname(fileName).toLowerCase();
   const mime = mimeType.toLowerCase();
@@ -195,7 +243,7 @@ async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mim
   const safeName = fileName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'episode.mp3';
   const path = `${new Date().toISOString().slice(0,10)}/${episodeId || crypto.randomUUID()}-${safeName}`;
   const publicResult = {
-    audioUrl: `${cfg.url}/storage/v1/object/public/${cfg.bucket}/${path}`,
+    audioUrl: publicPodcastAssetUrl(cfg, path),
     audioStoragePath: path,
     audioFileName: fileName,
     audioBytes: size,
@@ -217,6 +265,28 @@ async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mim
   });
   if (!res.ok) throw new Error(`העלאה ל־Supabase נכשלה (${res.status}): ${await res.text()}`);
   return publicResult;
+}
+
+function publicPodcastAssetUrl(cfg: ReturnType<typeof supabaseConfig>, path: string) {
+  return `${cfg.url}/storage/v1/object/public/${cfg.bucket}/${path}`;
+}
+
+async function uploadPodcastAssetBytes(bytes: ArrayBuffer, path: string, mimeType: string) {
+  const cfg = supabaseConfig();
+  if (!cfg.url || !cfg.key) throw new Error('Supabase לא מוגדר עדיין');
+  const res = await fetch(`${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: cfg.key,
+      authorization: `Bearer ${cfg.key}`,
+      'content-type': mimeType,
+      'cache-control': '31536000',
+      'x-upsert': 'true',
+    },
+    body: bytes,
+  });
+  if (!res.ok) throw new Error(`העלאת התמונה ל־Supabase נכשלה (${res.status}): ${await res.text()}`);
+  return { publicUrl: publicPodcastAssetUrl(cfg, path) };
 }
 
 function uploadPodcastAudioBytesTus(cfg: ReturnType<typeof supabaseConfig>, bytes: ArrayBuffer, path: string, mimeType: string) {
