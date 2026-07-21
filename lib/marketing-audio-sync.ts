@@ -151,34 +151,73 @@ function cleanSocialSentence(value: string) {
     .replace(/^[,.:;!?\-–—\s]+|[,.:;!?\-–—\s]+$/g, '');
 }
 
-export function createEpisodeSocialText(episode: Pick<Episode, 'title' | 'topic' | 'host' | 'guests'>, job?: Pick<MarketingAudioSyncJob, 'items'>) {
-  const guests = cleanSocialSentence(String(episode.guests || '').replace(/^[-—]+$/, ''));
-  const host = cleanSocialSentence(String(episode.host || ''));
-  const people = [guests && guests !== '—' ? guests : '', host ? `בהנחיית ${host}` : ''].filter(Boolean).join(' · ');
-  const subtitles = (job?.items || [])
+function transcriptFromJob(job?: Pick<MarketingAudioSyncJob, 'items'>) {
+  return (job?.items || [])
     .flatMap(item => item.subtitleSegments || [])
     .map(segment => cleanSocialSentence(segment.text || ''))
-    .filter(Boolean);
-  const seen = new Set<string>();
-  const highlights = subtitles.filter(line => {
-    const key = line.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return line.length > 8;
-  }).slice(0, 3).join('، ');
-  const topic = cleanSocialSentence(highlights || episode.topic || episode.title || 'שיחה מהצפון');
-  return `בפרק “${episode.title}”${people ? ` עם ${people}` : ''} מדברים על ${topic}. הצטרפו להאזנה ב״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 12000);
+}
+
+function normalizeSocialText(value: string) {
+  const standardInvite = `מוזמנים להאזין ל״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
+  let text = cleanSocialSentence(value)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$2')
+    .replace(/^בפרק הזה,?\s*/i, '')
+    .replace(/הפלטפורמה הקהילתית של הצפון/g, 'פלטפורמת הפודקאסט הקהילתית של הצפון')
+    .replace(PODKASH_SPOTIFY_URL, '')
+    .trim();
+  text = text.replace(/(?:הצטרפו|מוזמנים|האזינו|אל תשכחו|לשמיעה|להאזנה)[^.]*פודקש.*$/i, '').trim();
+  text = text.replace(/[.。\s]*$/, '');
+  return `${text}. ${standardInvite}`;
+}
+
+export async function createEpisodeSocialText(episode: Pick<Episode, 'title' | 'topic' | 'host' | 'guests'>, job?: Pick<MarketingAudioSyncJob, 'items'>) {
+  const guests = cleanSocialSentence(String(episode.guests || '').replace(/^[-—]+$/, ''));
+  const host = cleanSocialSentence(String(episode.host || ''));
+  const people = guests && guests !== '—' ? guests : (host ? `המראיין/ת ${host}` : 'המרואיינים');
+  const transcript = transcriptFromJob(job);
+  const fallbackTopic = cleanSocialSentence(episode.topic || 'שיחה אישית ומקצועית מהצפון');
+  if (!transcript) {
+    return `עם ${people}, בשיחה על ${fallbackTopic}. הצטרפו להאזנה ב״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('חסר OPENAI_API_KEY ליצירת טקסט לסושיאל');
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.OPENAI_SOCIAL_TEXT_MODEL || 'gpt-4o-mini',
+      temperature: 0.45,
+      messages: [
+        { role: 'system', content: 'אתה כותב טקסט סושיאל מקצועי בעברית לפודקאסט. כתוב פסקה אחת קצרה, טבעית ושיווקית, לא רשימת נקודות. פתח בשם/שמות המרואיינים ובמה שהם מביאים לשיחה; אל תפתח בשם הפרק ואל תחזור על שמות שמופיעים בכותרת בתור “שם הפרק”. סכם באמת את הנושאים לפי התמלול, אל תעתיק משפטים גולמיים. את המראיין הזכר רק אם זה נחוץ. אל תמציא שם תוכנית אחר. חובה לסיים בהזמנה להאזין ל״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון, ולכלול את קישור הספוטיפיי שניתן כטקסט רגיל, לא Markdown. בלי אימוג׳ים, בלי האשטגים, עד 90 מילים.' },
+        { role: 'user', content: `שם הפרק: ${episode.title}\nמרואיינים: ${guests || 'לא צוין'}\nמראיין/ת: ${host || 'לא צוין'}\nנושא כללי: ${episode.topic || ''}\nקישור Spotify: ${PODKASH_SPOTIFY_URL}\n\nתמלול מסרטוני השיווק:\n${transcript}` },
+      ],
+    }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json?.error?.message || `יצירת טקסט לסושיאל נכשלה (${res.status})`);
+  const text = normalizeSocialText(json?.choices?.[0]?.message?.content || '');
+  if (!text) throw new Error('OpenAI לא החזיר טקסט לסושיאל');
+  return text.includes(PODKASH_SPOTIFY_URL) ? text : `${text} ${PODKASH_SPOTIFY_URL}`;
 }
 
 async function updateEpisodeSocialTextFromJob(jobId: string) {
-  const store = await readStore();
-  const job = store.marketingAudioSyncJobs?.find(candidate => candidate.id === jobId);
-  if (!job) return;
-  const episodes = store.episodes.map(episode => {
-    if (episode.id !== job.episodeId) return episode;
-    return { ...episode, socialText: createEpisodeSocialText(episode, job) };
-  });
-  await writeStore({ ...store, episodes });
+  try {
+    const store = await readStore();
+    const job = store.marketingAudioSyncJobs?.find(candidate => candidate.id === jobId);
+    if (!job) return;
+    const socialText = await createEpisodeSocialText(store.episodes.find(episode => episode.id === job.episodeId) || { title: job.episodeTitle, topic: '', host: '', guests: '' }, job);
+    const episodes = store.episodes.map(episode => {
+      if (episode.id !== job.episodeId) return episode;
+      return { ...episode, socialText };
+    });
+    await writeStore({ ...store, episodes });
+  } catch (error) {
+    console.error('Failed to create episode social text', error);
+  }
 }
 
 async function updateItem(jobId: string, fileId: string | undefined, patch: Partial<MarketingAudioSyncJob['items'][number]>) {
@@ -746,6 +785,7 @@ export async function runMarketingAudioSync(jobId: string) {
     const next: MarketingAudioSyncJob = current || { id: jobId, episodeId: 0, episodeTitle: 'פרק', status: 'failed', createdAt: new Date().toISOString(), items: [] };
     const summaryHebrew = `סנכרון סאונד וכתוביות נכשל עבור “${next.episodeTitle}”.\nסיבה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`;
     await updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : 'שגיאה לא ידועה', summaryHebrew, unread: true });
+    await updateEpisodeSocialTextFromJob(jobId);
   } finally {
     activeJobs.delete(jobId);
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
@@ -852,6 +892,7 @@ export async function continueMarketingAudioSyncAfterSubtitleReview(jobId: strin
     const next: MarketingAudioSyncJob = current || { id: jobId, episodeId: 0, episodeTitle: 'פרק', status: 'failed', createdAt: new Date().toISOString(), items: [] };
     const summaryHebrew = `המשך סנכרון סאונד וכתוביות נכשל עבור “${next.episodeTitle}”.\nסיבה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`;
     await updateJob(jobId, { status: 'failed', finishedAt: new Date().toISOString(), error: error instanceof Error ? error.message : 'שגיאה לא ידועה', summaryHebrew, unread: true });
+    await updateEpisodeSocialTextFromJob(jobId);
   } finally {
     activeJobs.delete(jobId);
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
