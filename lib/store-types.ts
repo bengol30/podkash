@@ -10,6 +10,7 @@ export type DriveFolderStatus = {
 export type Episode = typeof episodes[number] & {
   brief?: string;
   contentPlan?: string;
+  socialText?: string;
   coordinationNote?: string;
   assetsNote?: string;
   ownerHostId?: string;

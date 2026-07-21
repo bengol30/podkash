@@ -9,6 +9,7 @@ import { cleanDateTime, formatDateTimeInput, formatDateTimeRange } from '@/lib/t
 import { YouTubeStudio } from './YouTubeStudio';
 
 const statusFlow: EpisodeStatus[] = ['רעיון','בתכנון תוכן','בתיאום','צילום נקבע','צולם','בעריכה','ממתין לאישור','מוכן לפרסום','פורסם'];
+const PODKASH_SPOTIFY_URL = 'https://open.spotify.com/show/033eNDxQDdcRftOLpRmv29';
 
 const applicationFieldLabels: Record<string, string> = {
   name: 'שם מלא', age: 'גיל', city: 'עיר מגורים', phone: 'טלפון', email: 'אימייל', links: 'רשתות / אתר / לינקדאין', displayName: 'שם להצגה בפרק',
@@ -20,6 +21,28 @@ const applicationFieldOrder = ['name','phone','email','age','city','links','disp
 
 function applicationTypeLabel(type: Application['type']) {
   return type === 'host' ? 'מנחה / מראיין/ת' : 'מרואיין/ת';
+}
+
+function cleanSocialSentence(value: string) {
+  return value.replace(/\s+/g, ' ').replace(/[|•]+/g, ' ').trim().replace(/^[,.:;!?\-–—\s]+|[,.:;!?\-–—\s]+$/g, '');
+}
+
+function episodeSocialText(episode: Pick<Episode, 'title' | 'topic' | 'host' | 'guests' | 'socialText'>, job?: MarketingAudioSyncJob) {
+  if (episode.socialText?.trim()) return episode.socialText.trim();
+  const subtitles = (job?.items || []).flatMap(item => item.subtitleSegments || []).map(segment => cleanSocialSentence(segment.text || '')).filter(Boolean);
+  if (!subtitles.length) return '';
+  const seen = new Set<string>();
+  const highlights = subtitles.filter(line => {
+    const key = line.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return line.length > 8;
+  }).slice(0, 3).join('، ');
+  const guests = cleanSocialSentence(String(episode.guests || '').replace(/^[-—]+$/, ''));
+  const host = cleanSocialSentence(String(episode.host || ''));
+  const people = [guests && guests !== '—' ? guests : '', host ? `בהנחיית ${host}` : ''].filter(Boolean).join(' · ');
+  const topic = cleanSocialSentence(highlights || episode.topic || episode.title || 'שיחה מהצפון');
+  return `בפרק “${episode.title}”${people ? ` עם ${people}` : ''} מדברים על ${topic}. הצטרפו להאזנה ב״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
 }
 
 function applicationEntries(application: Application) {
@@ -406,7 +429,6 @@ export function EpisodesClient() {
 export function EpisodeDetailClient({ id, initialStore }: { id: string; initialStore?: Store }) {
   const [store, setStore, replaceStoreFromServer] = useStore(initialStore);
   const [editOpen, setEditOpen] = useState(false);
-  const [taskOpen, setTaskOpen] = useState(false);
   const [briefOpen, setBriefOpen] = useState(false);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [syncingDrive, setSyncingDrive] = useState(false);
@@ -416,7 +438,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
   const [savingSubtitles, setSavingSubtitles] = useState(false);
   const [subtitleSaveNotice, setSubtitleSaveNotice] = useState('');
   const episode = store.episodes.find(e => String(e.id) === id);
-  const audioSyncJobs = episode ? (store.marketingAudioSyncJobs || []).filter(job => job.episodeId === episode.id) : [];
+  const audioSyncJobs = episode ? [...(store.marketingAudioSyncJobs || [])].filter(job => job.episodeId === episode.id).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))) : [];
   const latestAudioSyncJob = audioSyncJobs[0];
   const latestAudioSyncHasEditableSubtitles = Boolean(latestAudioSyncJob?.items?.some(item => item.subtitleSegments?.length));
   const unreadAudioSyncJob = audioSyncJobs.find(job => job.unread && (job.status === 'completed' || job.status === 'failed' || job.status === 'needs_subtitle_review'));
@@ -479,7 +501,7 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
   }
   function saveBrief(ev: FormEvent<HTMLFormElement>) {
     ev.preventDefault(); const f = ev.currentTarget;
-    setStore(s => ({...s, episodes: s.episodes.map(e => e.id === ep.id ? { ...e, brief: field(f,'brief'), contentPlan: field(f,'contentPlan'), coordinationNote: field(f,'coordinationNote'), assetsNote: field(f,'assetsNote') } : e)}));
+    setStore(s => ({...s, episodes: s.episodes.map(e => e.id === ep.id ? { ...e, brief: field(f,'brief'), contentPlan: field(f,'contentPlan'), socialText: field(f,'socialText'), coordinationNote: field(f,'coordinationNote'), assetsNote: field(f,'assetsNote') } : e)}));
     setBriefOpen(false);
   }
   function saveAssets(ev: FormEvent<HTMLFormElement>) {
@@ -600,19 +622,6 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
     return <span className={status.hasFiles ? 'pill green' : 'pill red'}>{status.hasFiles ? `${status.fileCount} קבצים` : 'אין קבצים'}</span>;
   }
 
-  function addTask(ev: FormEvent<HTMLFormElement>) {
-    ev.preventDefault(); const f = ev.currentTarget;
-    setStore(s => ({...s, tasks: [{ title: field(f,'title'), episode: ep.title, owner: field(f,'owner') || 'בן', due: formatDateTimeLocal(field(f,'due'), field(f,'dueText') || 'ללא דדליין'), type: field(f,'type') || 'כללי', status: 'פתוח' }, ...s.tasks], episodes: s.episodes.map(e => e.id === ep.id ? { ...e, tasks: e.tasks + 1 } : e)}));
-    setTaskOpen(false);
-  }
-  function toggleTask(index: number) {
-    const target = episodeTasks[index]; if (!target) return;
-    let seen = -1;
-    setStore(s => ({...s, tasks: s.tasks.map(t => {
-      if (t.episode === ep.title) seen += 1;
-      return t.episode === ep.title && seen === index ? { ...t, status: t.status === 'בוצע' ? 'פתוח' : 'בוצע' } : t;
-    })}));
-  }
   function advance() {
     setStore(s => ({...s, episodes:s.episodes.map(e => { if(e.id!==ep.id) return e; const i=statusFlow.indexOf(e.status); return {...e, status:statusFlow[Math.min(i+1,statusFlow.length-1)], progress:Math.min(100,e.progress+12)}; })}));
   }
@@ -623,29 +632,27 @@ export function EpisodeDetailClient({ id, initialStore }: { id: string; initialS
   }
 
   return <>
-    <Head eyebrow="מרכז ניהול פרק" title={ep.title} subtitle="כאן מנהלים את הפרק עצמו: פרטים, בריף, תיאום, משימות, נכסים והפצה — בלי לחזור לרשימה.">
-      <Btn onClick={()=>setEditOpen(true)}>עריכת פרטים</Btn><Btn tone="gold" onClick={()=>setTaskOpen(true)}>+ משימה לפרק</Btn><Btn tone="light" onClick={syncDriveAssets}>{syncingDrive ? 'מסנכרן Drive…' : 'סנכרון Drive'}</Btn><Btn tone="light" onClick={()=>setBriefOpen(true)}>בריף ותוכן</Btn><button className="deleteTiny" onClick={deleteCurrentEpisode}>מחק פרק</button>
+    <Head eyebrow="מרכז ניהול פרק" title={ep.title} subtitle="כאן מנהלים את הפרק עצמו: פרטים, בריף, תיאום, נכסים והפצה — בלי לחזור לרשימה.">
+      <Btn onClick={()=>setEditOpen(true)}>עריכת פרטים</Btn><Btn tone="light" onClick={syncDriveAssets}>{syncingDrive ? 'מסנכרן Drive…' : 'סנכרון Drive'}</Btn><Btn tone="gold" onClick={()=>setBriefOpen(true)}>בריף ותוכן</Btn><button className="deleteTiny" onClick={deleteCurrentEpisode}>מחק פרק</button>
     </Head>
-    <section className="metrics"><Metric n={`#${ep.number}`} label="מספר פרק"/><Metric n={ep.status} label="סטטוס"/><Metric n={`${completedTasks}/${episodeTasks.length}`} label="משימות בוצעו"/><Metric n={filledAssetLinks} label="קישורי נכסים"/></section>
+    <section className="metrics"><Metric n={`#${ep.number}`} label="מספר פרק"/><Metric n={ep.status} label="סטטוס"/><Metric n={readyPlatforms} label="פריטי הפצה מוכנים"/><Metric n={filledAssetLinks} label="קישורי נכסים"/></section>
     <section className="grid two">
       <div className="panel dark"><h2>פרטי בסיס</h2><p className="muted">נושא: {ep.topic}<br/>מנחה: {ep.host}<br/>מרואיינים: {ep.guests}<br/>צילום: {cleanDateTime(ep.recording)}<br/>פרסום מתוכנן: {cleanDateTime(ep.publish)}</p><div className="progress"><span style={{width:progress+'%'}}/></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:16}}><button className="btn gold" onClick={advance}>קדם סטטוס</button><Link className="btn light" href="/episodes">חזרה לרשימה</Link></div></div>
-      <div className="panel"><h2>תוכן ובריף</h2><div className="list"><div className="row"><span>בריף לפרק</span><span className={ep.brief?'pill green':'pill red'}>{ep.brief?'קיים':'להשלים'}</span></div><div className="row"><span>תוכנית תוכן / שאלות</span><span className={ep.contentPlan?'pill green':'pill'}>{ep.contentPlan?'קיים':'טיוטה'}</span></div><div className="row"><span>תיאום ודגשים</span><span className={ep.coordinationNote?'pill green':'pill red'}>{ep.coordinationNote?'עודכן':'חסר'}</span></div><div className="row"><span>נכסים וחומרים</span><span className={ep.assetsNote?'pill green':'pill'}>{ep.assetsNote?'עודכן':'ממתין'}</span></div></div></div>
+      <div className="panel"><h2>תוכן ובריף</h2><div className="list"><div className="row"><span>בריף לפרק</span><span className={ep.brief?'pill green':'pill red'}>{ep.brief?'קיים':'להשלים'}</span></div><div className="row"><span>תוכנית תוכן / שאלות</span><span className={ep.contentPlan?'pill green':'pill'}>{ep.contentPlan?'קיים':'טיוטה'}</span></div><div className="row"><span>טקסט לסושיאל</span><span className={episodeSocialText(ep, latestAudioSyncJob)?'pill green':'pill'}>{episodeSocialText(ep, latestAudioSyncJob)?'מוכן':'טיוטה'}</span></div><div className="row"><span>תיאום ודגשים</span><span className={ep.coordinationNote?'pill green':'pill red'}>{ep.coordinationNote?'עודכן':'חסר'}</span></div><div className="row"><span>נכסים וחומרים</span><span className={ep.assetsNote?'pill green':'pill'}>{ep.assetsNote?'עודכן':'ממתין'}</span></div></div>{episodeSocialText(ep, latestAudioSyncJob) ? <p className="muted" style={{margin:'14px 0 0'}}>{episodeSocialText(ep, latestAudioSyncJob)}</p> : null}</div>
     </section>
-    <section className="grid three" style={{marginTop:16}}>
+    <section className="grid two" style={{marginTop:16}}>
       <div className="panel"><h2>תיאום</h2><p className="muted">{ep.coordinationNote || 'אין עדיין הערות תיאום לפרק הזה.'}</p>{sessions.length ? sessions.map((ss,i)=><div className="row" key={i}><span>{ss.studio}</span><span className="pill">{cleanDateTime(ss.time)}</span></div>) : <Link className="btn light" href="/production">קבע סשן צילום</Link>}</div>
-      <div className="panel"><h2>משימות</h2><div className="list">{episodeTasks.length ? episodeTasks.map((t,i)=><button className="row click" key={`${t.title}-${i}`} onClick={()=>toggleTask(i)}><span>{t.title}<br/><small className="muted">{t.owner} · {t.type}</small></span><span className={t.status==='בוצע'?'pill green':'pill red'}>{t.status} · {cleanDateTime(t.due)}</span></button>) : <p className="muted">אין עדיין משימות לפרק. אפשר להוסיף מכאן.</p>}</div></div>
       <div className="panel"><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'start',marginBottom:10}}><div><h2>נכסים</h2><p className="muted">כל הקישורים החשובים של הפרק במקום אחד: Drive, YouTube, Spotify וקליפים להפצה.</p>{ep.driveAssetsSyncedAt ? <p className="muted">סונכרן מול Drive: {cleanDateTime(ep.driveAssetsSyncedAt)}</p> : null}</div><button className="miniBtn" onClick={()=>setAssetsOpen(true)}>עריכת נכסים</button></div><div id="marketing-audio-sync" className="audioSyncBox"><div><b>סאונד וכתוביות לסרטוני שיווק</b><p className="muted">מוריד את סרטוני השיווק ואת האודיו הרשמי, מסנכרן לפי הסאונד המקורי, מתמלל ב־OpenAI ואז עוצר לעריכת כתוביות חובה לפני צריבה, רינדור והעלאה ל־Drive.</p>{latestAudioSyncJob ? <small className="muted">סטטוס אחרון: {audioSyncStatusLabel(latestAudioSyncJob)}{latestAudioSyncJob.finishedAt ? ` · ${cleanDateTime(latestAudioSyncJob.finishedAt)}` : ''}</small> : null}</div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'end'}}><button className="btn gold" onClick={startMarketingAudioSync} disabled={startingAudioSync || latestAudioSyncJob?.status === 'running' || latestAudioSyncJob?.status === 'queued' || latestAudioSyncJob?.status === 'rendering'}>{startingAudioSync ? 'מפעיל…' : 'חיבור סאונד וכתוביות'}</button>{latestAudioSyncHasEditableSubtitles ? <button className="btn dark" onClick={()=>setSubtitleJob(latestAudioSyncJob)}>עריכת כתוביות</button> : null}{latestAudioSyncJob?.summaryHebrew ? <button className="btn light" onClick={()=>setJobSummaryOpen(latestAudioSyncJob)}>סיכום אחרון</button> : null}</div></div><div className="list">{assetLinks.map(asset=>asset.value ? <a className="row click assetLinkRow" key={asset.key} href={asset.value} target="_blank" rel="noreferrer"><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'end'}}>{assetStatusPill(asset.status)}<span className="pill green">פתח</span></span></a> : <button className="row click assetLinkRow" key={asset.key} onClick={()=>setAssetsOpen(true)}><span><b>{asset.label}</b><br/><small className="muted">{asset.hint}</small></span><span className="pill red">להוסיף</span></button>)}</div>{ep.assetsNote ? <p className="muted" style={{margin:'14px 0 0'}}>{ep.assetsNote}</p> : null}</div>
     </section>
     <section className="grid two" style={{marginTop:16}}>
       <div className="panel"><h2>הפצה</h2>{episodePlatforms.length ? <div className="table">{episodePlatforms.map(p=><div className="tableRow" key={p.name}><strong>{p.name}</strong><span>{p.asset}</span><span>{p.link}</span><span className="pill">{p.status}</span></div>)}</div> : <p className="muted">עדיין אין פריטי הפצה לפרק הזה.</p>}</div>
-      <div className="panel"><h2>לוג פעילות</h2><div className="list"><div className="row"><span>הפרק נמצא בסטטוס {ep.status}</span><span className="pill">עכשיו</span></div><div className="row"><span>{episodeTasks.length} משימות מחוברות לפרק</span><span className="pill">מעודכן</span></div></div></div>
+      <div className="panel"><h2>לוג פעילות</h2><div className="list"><div className="row"><span>הפרק נמצא בסטטוס {ep.status}</span><span className="pill">עכשיו</span></div><div className="row"><span>{filledAssetLinks} קישורי נכסים מחוברים לפרק</span><span className="pill">מעודכן</span></div></div></div>
     </section>
     {editOpen && <Modal title="עריכת פרטי פרק" subtitle="שינויים נשמרים בכרטיס הפרק ובקישורים למשימות שלו." onClose={()=>setEditOpen(false)}><form className="smartForm" onSubmit={updateEpisode}><FormRow label="שם הפרק" name="title" required><input name="title" defaultValue={ep.title} required /></FormRow><FormRow label="מספר פרק"><input name="number" defaultValue={ep.number} /></FormRow><FormRow label="נושא / זווית"><input name="topic" defaultValue={ep.topic} /></FormRow><FormRow label="מנחה"><input name="host" defaultValue={ep.host} /></FormRow><FormRow label="מרואיינים"><input name="guests" defaultValue={ep.guests} /></FormRow><FormRow label="סטטוס"><select name="status" defaultValue={ep.status}>{statusFlow.map(s=><option key={s}>{s}</option>)}</select></FormRow><FormRow label="מועד צילום חדש"><input name="recording" type="datetime-local" /></FormRow><FormRow label="או טקסט צילום"><input name="recordingText" defaultValue={ep.recording} /></FormRow><FormRow label="מועד פרסום חדש"><input name="publish" type="datetime-local" /></FormRow><FormRow label="או טקסט פרסום"><input name="publishText" defaultValue={ep.publish} /></FormRow><label className="checkRow"><input type="checkbox" name="urgent" defaultChecked={!!ep.urgent}/> לסמן כדחוף</label><div className="formActions"><button className="btn light" type="button" onClick={()=>setEditOpen(false)}>ביטול</button><button className="btn gold">שמירת שינויים</button></div></form></Modal>}
     {assetsOpen && <Modal title="נכסי הפרק" subtitle="הזינו כאן את כל הקישורים החשובים של הפרק. סנכרון Drive ימלא אוטומטית את תיקיות הפרק." onClose={()=>setAssetsOpen(false)}><form className="smartForm" onSubmit={saveAssets}><FormRow label="תיקיית Drive של הפרק"><input name="driveFolderUrl" type="url" defaultValue={ep.driveFolderUrl || ''} placeholder="https://drive.google.com/..." /></FormRow><FormRow label="תיקיית סרטוני שיווק"><input name="driveMarketingFolderUrl" type="url" defaultValue={ep.driveMarketingFolderUrl || ep.shortsDriveFolderUrl || ''} placeholder="תיקיית Reels / Shorts / TikTok" /></FormRow><FormRow label="תיקיית הפרק המצולם המלא"><input name="fullVideoFolderUrl" type="url" defaultValue={ep.fullVideoFolderUrl || ep.fullVideoUrl || ''} placeholder="תיקיית וידאו מלא" /></FormRow><FormRow label="תיקיית קובץ שמע מלא"><input name="fullAudioFolderUrl" type="url" defaultValue={ep.fullAudioFolderUrl || ''} placeholder="תיקיית אודיו מלא" /></FormRow><input type="hidden" name="fullVideoUrl" value={ep.fullVideoFolderUrl || ep.fullVideoUrl || ''} /><input type="hidden" name="shortsDriveFolderUrl" value={ep.driveMarketingFolderUrl || ep.shortsDriveFolderUrl || ''} /><FormRow label="קישור YouTube"><input name="youtubeUrl" type="url" defaultValue={ep.youtubeUrl || ''} placeholder="https://youtube.com/watch..." /></FormRow><FormRow label="קישור Spotify"><input name="spotifyUrl" type="url" defaultValue={ep.spotifyUrl || ''} placeholder="https://open.spotify.com/..." /></FormRow><label className="formRow wide"><span>הערות על נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''} placeholder="לדוגמה: חסר Thumbnail, מחכה לעריכת אודיו, הקליפים מוכנים להפצה..." /></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setAssetsOpen(false)}>ביטול</button><button className="btn gold">שמירת נכסים</button></div></form></Modal>}
-    {briefOpen && <Modal title="בריף ותוכן" subtitle="המידע נשמר בתוך מרכז הפרק." onClose={()=>setBriefOpen(false)}><form className="smartForm" onSubmit={saveBrief}><label className="formRow wide"><span>בריף לפרק</span><textarea name="brief" rows={4} defaultValue={ep.brief || ''}/></label><label className="formRow wide"><span>תוכנית תוכן / שאלות</span><textarea name="contentPlan" rows={4} defaultValue={ep.contentPlan || ''}/></label><label className="formRow wide"><span>תיאום ודגשים</span><textarea name="coordinationNote" rows={4} defaultValue={ep.coordinationNote || ''}/></label><label className="formRow wide"><span>נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''}/></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setBriefOpen(false)}>ביטול</button><button className="btn gold">שמירה</button></div></form></Modal>}
+    {briefOpen && <Modal title="בריף ותוכן" subtitle="המידע נשמר בתוך מרכז הפרק." onClose={()=>setBriefOpen(false)}><form className="smartForm" onSubmit={saveBrief}><label className="formRow wide"><span>בריף לפרק</span><textarea name="brief" rows={4} defaultValue={ep.brief || ''}/></label><label className="formRow wide"><span>תוכנית תוכן / שאלות</span><textarea name="contentPlan" rows={4} defaultValue={ep.contentPlan || ''}/></label><label className="formRow wide"><span>טקסט לסושיאל</span><textarea name="socialText" rows={4} defaultValue={episodeSocialText(ep, latestAudioSyncJob)} placeholder="אחרי חיבור סאונד וכתוביות המערכת תמלא כאן פסקה קצרה לפי הכתוביות שזוהו." /></label><label className="formRow wide"><span>תיאום ודגשים</span><textarea name="coordinationNote" rows={4} defaultValue={ep.coordinationNote || ''}/></label><label className="formRow wide"><span>נכסים וחומרים</span><textarea name="assetsNote" rows={4} defaultValue={ep.assetsNote || ''}/></label><div className="formActions"><button className="btn light" type="button" onClick={()=>setBriefOpen(false)}>ביטול</button><button className="btn gold">שמירה</button></div></form></Modal>}
     {jobSummaryOpen && <Modal title="סיכום סאונד וכתוביות" subtitle={`פרק: ${jobSummaryOpen.episodeTitle}`} onClose={()=>acknowledgeAudioSyncJob(jobSummaryOpen)}><div className="summaryBox"><pre>{jobSummaryOpen.summaryHebrew || jobSummaryOpen.error || 'אין עדיין סיכום.'}</pre>{jobSummaryOpen.outputFolderUrl ? <a className="btn gold" href={jobSummaryOpen.outputFolderUrl} target="_blank" rel="noreferrer">פתיחת תיקיית התוצאות בדרייב</a> : null}<div className="formActions"><button className="btn light" type="button" onClick={()=>acknowledgeAudioSyncJob(jobSummaryOpen)}>סגירה וסימון כנקרא</button></div></div></Modal>}
     {subtitleJob && <Modal title="עריכת כתוביות לפני רינדור" subtitle={`פרק: ${subtitleJob.episodeTitle} · ${subtitleJob.items.filter(item=>item.status==='needs_subtitle_review').length} סרטונים ממתינים`} onClose={()=>setSubtitleJob(null)}><div className="summaryBox"><p className="muted" style={{marginTop:0}}>{subtitleJob.status === 'needs_subtitle_review' ? 'זה שלב חובה: תקן כאן את הטקסטים, שמור טיוטה אם צריך, ואז לחץ “המשך רינדור והעלאה”.' : 'אפשר כבר לערוך ולשמור את הכתוביות של הסרטונים שהתמלול שלהם מוכן. המשך הרינדור ייפתח אחרי שכל הסרטונים יסיימו תמלול.'}</p><div className="list">{subtitleJob.items.filter(item=>item.subtitleSegments?.length).map(item=><details className="panel" key={item.fileId || item.fileName} style={{marginBottom:12}}><summary style={{cursor:'pointer',fontWeight:800}}>{item.fileName} · {item.subtitleSegments?.length || 0} משפטים/שורות כתובית</summary><div className="smartForm" style={{marginTop:12}}>{(item.subtitleSegments || []).map((segment, segmentIndex)=><label className="formRow wide" key={segment.id || segmentIndex}><span>משפט {segmentIndex + 1} · {(segment.startMs/1000).toFixed(1)}s–{(segment.endMs/1000).toFixed(1)}s</span>{segment.previewAudioUrl || segment.previewAudioFileId ? <audio controls preload="none" src={`/api/marketing-audio-sync/${subtitleJob.id}/preview-audio?fileId=${encodeURIComponent(item.fileId || '')}&segmentId=${encodeURIComponent(segment.id || '')}&segmentIndex=${segment.index}`} style={{width:'100%'}} /> : null}<textarea rows={2} value={segment.text} onChange={e=>setSubtitleJob(job=>job ? { ...job, items: job.items.map(jobItem=>jobItem.fileId===item.fileId ? { ...jobItem, subtitleSegments: (jobItem.subtitleSegments || []).map((seg,i)=>i===segmentIndex ? { ...seg, text: e.target.value } : seg) } : jobItem) } : job)} /></label>)}</div></details>)}</div>{subtitleSaveNotice ? <p className="muted" style={{margin:'8px 0 0'}}>{subtitleSaveNotice}</p> : null}<div className="formActions"><button className="btn light" type="button" onClick={()=>subtitleJob && saveSubtitleDraft(subtitleJob)} disabled={savingSubtitles}>{savingSubtitles?'שומר…':'שמירת טיוטת כתוביות'}</button><button className="btn gold" type="button" onClick={()=>subtitleJob && continueAfterSubtitleReview(subtitleJob)} disabled={savingSubtitles || subtitleJob.status !== 'needs_subtitle_review'}>{savingSubtitles?'ממשיך…':subtitleJob.status !== 'needs_subtitle_review'?'ממתין לסיום תמלול כל הסרטונים':'המשך רינדור והעלאה ל־Drive'}</button></div></div></Modal>}
-    {taskOpen && <Modal title="משימה חדשה לפרק" subtitle={`המשימה תתחבר ישירות אל ${ep.title}.`} onClose={()=>setTaskOpen(false)}><form className="smartForm" onSubmit={addTask}><FormRow label="שם המשימה" name="title" required/><FormRow label="אחראי" name="owner"/><FormRow label="דדליין"><input name="due" type="datetime-local" /></FormRow><FormRow label="או טקסט דדליין" name="dueText"/><FormRow label="סוג"><select name="type"><option>תוכן</option><option>תיאום</option><option>צילום</option><option>עריכה</option><option>הפצה</option><option>וואטסאפ</option><option>כללי</option></select></FormRow><div className="formActions"><button className="btn light" type="button" onClick={()=>setTaskOpen(false)}>ביטול</button><button className="btn gold">יצירת משימה</button></div></form></Modal>}
   </>;
 }
 

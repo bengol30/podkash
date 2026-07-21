@@ -12,6 +12,7 @@ type DriveTokens = Awaited<ReturnType<typeof refreshGoogleDriveTokensIfNeeded>>[
 type DriveFile = { id: string; name: string; mimeType?: string; webViewLink?: string };
 
 const OUTPUT_FOLDER_NAME = 'סרטונים ערוכים עם סאונד וכתוביות';
+const PODKASH_SPOTIFY_URL = 'https://open.spotify.com/show/033eNDxQDdcRftOLpRmv29';
 const VIDEO_RE = /\.(mp4|mov|m4v|webm|mkv)$/i;
 const AUDIO_RE = /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i;
 const INTERMEDIATE_VIDEO_CRF = process.env.PODKASH_INTERMEDIATE_VIDEO_CRF || '16';
@@ -140,6 +141,44 @@ async function upsertJob(updater: (job: MarketingAudioSyncJob) => MarketingAudio
 
 async function updateJob(jobId: string, patch: Partial<MarketingAudioSyncJob>) {
   await upsertJob(job => job.id === jobId ? { ...job, ...patch } : job);
+}
+
+function cleanSocialSentence(value: string) {
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/[|•]+/g, ' ')
+    .trim()
+    .replace(/^[,.:;!?\-–—\s]+|[,.:;!?\-–—\s]+$/g, '');
+}
+
+export function createEpisodeSocialText(episode: Pick<Episode, 'title' | 'topic' | 'host' | 'guests'>, job?: Pick<MarketingAudioSyncJob, 'items'>) {
+  const guests = cleanSocialSentence(String(episode.guests || '').replace(/^[-—]+$/, ''));
+  const host = cleanSocialSentence(String(episode.host || ''));
+  const people = [guests && guests !== '—' ? guests : '', host ? `בהנחיית ${host}` : ''].filter(Boolean).join(' · ');
+  const subtitles = (job?.items || [])
+    .flatMap(item => item.subtitleSegments || [])
+    .map(segment => cleanSocialSentence(segment.text || ''))
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const highlights = subtitles.filter(line => {
+    const key = line.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return line.length > 8;
+  }).slice(0, 3).join('، ');
+  const topic = cleanSocialSentence(highlights || episode.topic || episode.title || 'שיחה מהצפון');
+  return `בפרק “${episode.title}”${people ? ` עם ${people}` : ''} מדברים על ${topic}. הצטרפו להאזנה ב״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
+}
+
+async function updateEpisodeSocialTextFromJob(jobId: string) {
+  const store = await readStore();
+  const job = store.marketingAudioSyncJobs?.find(candidate => candidate.id === jobId);
+  if (!job) return;
+  const episodes = store.episodes.map(episode => {
+    if (episode.id !== job.episodeId) return episode;
+    return { ...episode, socialText: createEpisodeSocialText(episode, job) };
+  });
+  await writeStore({ ...store, episodes });
 }
 
 async function updateItem(jobId: string, fileId: string | undefined, patch: Partial<MarketingAudioSyncJob['items'][number]>) {
@@ -696,9 +735,11 @@ export async function runMarketingAudioSync(jobId: string) {
       const totalSegments = readyForReview.reduce((sum, item) => sum + (item.subtitleSegments?.length || 0), 0);
       const summaryHebrew = `התמלול לפרק “${reviewJob.episodeTitle}” מוכן לבדיקה.\nצריך לדייק כתוביות עבור ${readyForReview.length} סרטונים (${totalSegments} משפטים/שורות כתובית).\nאחרי אישור הכתוביות המערכת תמשיך אוטומטית לרינדור, העלאה ל־Drive ושאר התהליך.`;
       await updateJob(jobId, { status: 'needs_subtitle_review', summaryHebrew, unread: true });
+      await updateEpisodeSocialTextFromJob(jobId);
     } else {
       const summary = summarize(reviewJob);
       await updateJob(jobId, { status: failed ? 'failed' : 'completed', finishedAt: new Date().toISOString(), summaryHebrew: summary, unread: true });
+      await updateEpisodeSocialTextFromJob(jobId);
     }
   } catch (error) {
     const current = (await readStore()).marketingAudioSyncJobs?.find(job => job.id === jobId);
@@ -733,6 +774,7 @@ export async function updateMarketingAudioSyncSubtitles(jobId: string, items: Ar
     };
   });
   await writeStore({ ...store, marketingAudioSyncJobs: jobs });
+  await updateEpisodeSocialTextFromJob(jobId);
 }
 
 export async function queueMarketingAudioSyncRendering(jobId: string) {
@@ -804,6 +846,7 @@ export async function continueMarketingAudioSyncAfterSubtitleReview(jobId: strin
     const failed = finalJob.items.some(item => item.status === 'failed');
     const summary = summarize(finalJob);
     await updateJob(jobId, { status: failed ? 'failed' : 'completed', finishedAt: new Date().toISOString(), outputFolderUrl: outputFolder.webViewLink, summaryHebrew: summary, unread: true });
+    await updateEpisodeSocialTextFromJob(jobId);
   } catch (error) {
     const current = (await readStore()).marketingAudioSyncJobs?.find(job => job.id === jobId);
     const next: MarketingAudioSyncJob = current || { id: jobId, episodeId: 0, episodeTitle: 'פרק', status: 'failed', createdAt: new Date().toISOString(), items: [] };
