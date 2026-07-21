@@ -160,8 +160,8 @@ function transcriptFromJob(job?: Pick<MarketingAudioSyncJob, 'items'>) {
     .slice(0, 12000);
 }
 
-function normalizeSocialText(value: string) {
-  const standardInvite = `מוזמנים להאזין ל״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
+function normalizeSocialText(value: string, people?: string) {
+  const standardInvite = `*להאזנה לפודקש*\nפלטפורמת הפודקאסט הקהילתית של הצפון:\n${PODKASH_SPOTIFY_URL}`;
   let text = cleanSocialSentence(value)
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$2')
     .replace(/^בפרק הזה,?\s*/i, '')
@@ -169,8 +169,16 @@ function normalizeSocialText(value: string) {
     .replace(PODKASH_SPOTIFY_URL, '')
     .trim();
   text = text.replace(/(?:הצטרפו|מוזמנים|האזינו|אל תשכחו|לשמיעה|להאזנה)[^.]*פודקש.*$/i, '').trim();
-  text = text.replace(/[.。\s]*$/, '');
-  return `${text}. ${standardInvite}`;
+  text = text.replace(/\*?להאזנה לפודקש\*?.*$/i, '').trim();
+  text = text.replace(/(?:הצטרפו|מוזמנים|האזינו|אל תשכחו|לשמיעה|להאזנה)[^.]*$/i, '').trim();
+  text = text.replace(/[*.。\s]*$/, '');
+  if (people) {
+    const escapedPeople = people.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`^${escapedPeople}`), `*${people}*`);
+  }
+  const firstSentenceMatch = text.match(/^(.+?[.!?])\s+(.+)$/);
+  const body = firstSentenceMatch ? `${firstSentenceMatch[1]}\n\n${firstSentenceMatch[2].replace(/[.。\s]*$/, '')}.` : `${text}.`;
+  return `${body}\n\n${standardInvite}`;
 }
 
 export async function createEpisodeSocialText(episode: Pick<Episode, 'title' | 'topic' | 'host' | 'guests'>, job?: Pick<MarketingAudioSyncJob, 'items'>) {
@@ -180,7 +188,7 @@ export async function createEpisodeSocialText(episode: Pick<Episode, 'title' | '
   const transcript = transcriptFromJob(job);
   const fallbackTopic = cleanSocialSentence(episode.topic || 'שיחה אישית ומקצועית מהצפון');
   if (!transcript) {
-    return `עם ${people}, בשיחה על ${fallbackTopic}. הצטרפו להאזנה ב״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון: ${PODKASH_SPOTIFY_URL}`;
+    return normalizeSocialText(`עם ${people}, בשיחה על ${fallbackTopic}.`, guests && guests !== '—' ? guests : undefined);
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -192,14 +200,14 @@ export async function createEpisodeSocialText(episode: Pick<Episode, 'title' | '
       model: process.env.OPENAI_SOCIAL_TEXT_MODEL || 'gpt-4o-mini',
       temperature: 0.45,
       messages: [
-        { role: 'system', content: 'אתה כותב טקסט סושיאל מקצועי בעברית לפודקאסט. כתוב פסקה אחת קצרה, טבעית ושיווקית, לא רשימת נקודות. פתח בשם/שמות המרואיינים ובמה שהם מביאים לשיחה; אל תפתח בשם הפרק ואל תחזור על שמות שמופיעים בכותרת בתור “שם הפרק”. סכם באמת את הנושאים לפי התמלול, אל תעתיק משפטים גולמיים. את המראיין הזכר רק אם זה נחוץ. אל תמציא שם תוכנית אחר. חובה לסיים בהזמנה להאזין ל״פודקש״ — פלטפורמת הפודקאסט הקהילתית של הצפון, ולכלול את קישור הספוטיפיי שניתן כטקסט רגיל, לא Markdown. בלי אימוג׳ים, בלי האשטגים, עד 90 מילים.' },
+        { role: 'system', content: 'אתה כותב טקסט סושיאל מקצועי בעברית לפודקאסט, שמיועד להישלח בוואטסאפ. כתוב פסקה אחת קצרה וטבעית, לא רשימת נקודות. פתח בשם/שמות המרואיינים ובמה שהם מביאים לשיחה; אל תפתח בשם הפרק ואל תחזור על שמות שמופיעים בכותרת בתור “שם הפרק”. סכם באמת את הנושאים לפי התמלול, אל תעתיק משפטים גולמיים. את המראיין הזכר רק אם זה נחוץ. אל תמציא שם תוכנית אחר. אל תוסיף הזמנה או קישור בסוף — המערכת תוסיף אותם לבד. בלי אימוג׳ים, בלי האשטגים, עד 70 מילים.' },
         { role: 'user', content: `שם הפרק: ${episode.title}\nמרואיינים: ${guests || 'לא צוין'}\nמראיין/ת: ${host || 'לא צוין'}\nנושא כללי: ${episode.topic || ''}\nקישור Spotify: ${PODKASH_SPOTIFY_URL}\n\nתמלול מסרטוני השיווק:\n${transcript}` },
       ],
     }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json?.error?.message || `יצירת טקסט לסושיאל נכשלה (${res.status})`);
-  const text = normalizeSocialText(json?.choices?.[0]?.message?.content || '');
+  const text = normalizeSocialText(json?.choices?.[0]?.message?.content || '', guests && guests !== '—' ? guests : undefined);
   if (!text) throw new Error('OpenAI לא החזיר טקסט לסושיאל');
   return text.includes(PODKASH_SPOTIFY_URL) ? text : `${text} ${PODKASH_SPOTIFY_URL}`;
 }
