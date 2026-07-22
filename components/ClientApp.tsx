@@ -762,14 +762,12 @@ function validHttpsUrl(value: string) { if (!value) return true; try { return ne
 function cleanImportedSocialText(value: string) {
  return value
   .replace(/\*+/g, '')
-  .replace(/https:\/\/open\.spotify\.com\/show\/033eNDxQDdcRftOLpRmv29\S*/g, '')
+  .replace(/https?:\/\/\S+/g, '')
   .replace(/פלטפורמת הפודקאסט הקהילתית של הצפון:?\s*/g, '')
   .replace(/להאזנה לפודקש\s*/g, '')
+  .replace(/להאזנה לפרק הספציפי בספוטיפיי:?\s*/g, '')
   .replace(/\n{3,}/g, '\n\n')
   .trim();
-}
-function spotifyEpisodeInvitation(url: string) {
- return url ? `\n\nלהאזנה לפרק הספציפי בספוטיפיי:\n${url}` : '\n\nלהאזנה לפרק הספציפי בספוטיפיי:\n[להדביק כאן את קישור הפרק אחרי ש־Spotify קולט אותו]';
 }
 function isPodcastEpisodeLive(ep: PodcastEpisode) {
  if(!ep.audioUrl) return false;
@@ -853,12 +851,11 @@ function SpotifyPodcastManager({ store, setStore, notice, setNotice }: { store: 
   const source=store.episodes.find(e=>e.id===sourceId) || sourceEpisode;
   const text=cleanImportedSocialText(source?.socialText || '');
   if(!text){ setNotice('לא נמצא טקסט לסושיאל בפרק המקור. צריך קודם להריץ/לשמור טקסט לסושיאל במרכז הפרק.'); return; }
-  const spotifyUrl=String(document.querySelector<HTMLInputElement>('input[name="spotifyUrl"]')?.value || selected?.spotifyUrl || source?.spotifyUrl || '').trim();
   const description=document.querySelector<HTMLTextAreaElement>('textarea[name="podcastDescription"]');
   if(!description){ setNotice('לא נמצא שדה תיאור הפרק'); return; }
-  description.value=`${text}${spotifyEpisodeInvitation(spotifyUrl)}`;
+  description.value=text;
   description.dispatchEvent(new Event('input', { bubbles:true }));
-  setNotice(spotifyUrl ? 'טקסט לסושיאל יובא לתיאור הפרק עם קישור לפרק הספציפי.' : 'טקסט לסושיאל יובא לתיאור הפרק. אחרי ש־Spotify קולט את הפרק, הדבק את קישור הפרק בשדה “קישור Spotify” ולחץ שוב על הייבוא כדי להחליף את הסימון בקישור אמיתי.');
+  setNotice('טקסט לסושיאל יובא לתיאור הפרק בלי כוכביות ובלי קישורים.');
  }
  async function save(ev: FormEvent<HTMLFormElement>){
   ev.preventDefault(); const f=ev.currentTarget; setSaving(true); setNotice(''); setPublishLog([]);
