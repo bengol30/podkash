@@ -139,7 +139,7 @@ export async function uploadPodcastImage(file: File, episodeId?: string) {
   const safeEpisodeId = episodeId || crypto.randomUUID();
   const safeBase = basename(file.name, extname(file.name)).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'cover';
   const path = `podcast-images/${new Date().toISOString().slice(0,10)}/${safeEpisodeId}-${safeBase}-3000.jpg`;
-  const result = await uploadPodcastAssetBytes(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), path, 'image/jpeg');
+  const result = await uploadPodcastAssetBytes(bytes, path, 'image/jpeg');
   return {
     imageUrl: result.publicUrl,
     imageStoragePath: path,
@@ -237,6 +237,11 @@ function findFfmpegPath() {
   return found;
 }
 
+function uploadBodyFromBytes(bytes: ArrayBufferLike | ArrayBufferView) {
+  if (ArrayBuffer.isView(bytes)) return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return Buffer.from(bytes);
+}
+
 async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mimeType: string, size: number, episodeId?: string) {
   const cfg = supabaseConfig();
   if (!cfg.url || !cfg.key) throw new Error('Supabase לא מוגדר עדיין');
@@ -253,6 +258,7 @@ async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mim
     await uploadPodcastAudioBytesTus(cfg, bytes, path, mimeType || 'audio/mpeg');
     return publicResult;
   }
+  const uploadBody = uploadBodyFromBytes(bytes);
   const res = await fetch(`${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/${path}`, {
     method: 'POST',
     headers: {
@@ -261,7 +267,7 @@ async function uploadPodcastAudioBytes(bytes: ArrayBuffer, fileName: string, mim
       'content-type': mimeType || 'audio/mpeg',
       'x-upsert': 'true',
     },
-    body: bytes,
+    body: uploadBody as unknown as BodyInit,
   });
   if (!res.ok) throw new Error(`העלאה ל־Supabase נכשלה (${res.status}): ${await res.text()}`);
   return publicResult;
@@ -271,9 +277,11 @@ function publicPodcastAssetUrl(cfg: ReturnType<typeof supabaseConfig>, path: str
   return `${cfg.url}/storage/v1/object/public/${cfg.bucket}/${path}`;
 }
 
-async function uploadPodcastAssetBytes(bytes: ArrayBuffer, path: string, mimeType: string) {
+async function uploadPodcastAssetBytes(bytes: ArrayBufferLike | ArrayBufferView, path: string, mimeType: string) {
   const cfg = supabaseConfig();
   if (!cfg.url || !cfg.key) throw new Error('Supabase לא מוגדר עדיין');
+  const uploadBody = uploadBodyFromBytes(bytes);
+  if (!uploadBody.byteLength) throw new Error('הקובץ שנוצר להעלאה ריק');
   const res = await fetch(`${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/${path}`, {
     method: 'POST',
     headers: {
@@ -283,10 +291,18 @@ async function uploadPodcastAssetBytes(bytes: ArrayBuffer, path: string, mimeTyp
       'cache-control': '31536000',
       'x-upsert': 'true',
     },
-    body: bytes,
+    body: uploadBody as unknown as BodyInit,
   });
   if (!res.ok) throw new Error(`העלאת התמונה ל־Supabase נכשלה (${res.status}): ${await res.text()}`);
-  return { publicUrl: publicPodcastAssetUrl(cfg, path) };
+  const publicUrl = publicPodcastAssetUrl(cfg, path);
+  if (mimeType.toLowerCase().startsWith('image/')) {
+    const verifyRes = await fetch(publicUrl, { method: 'HEAD', cache: 'no-store' });
+    const storedBytes = Number(verifyRes.headers.get('content-length') || 0);
+    if (!verifyRes.ok || storedBytes < Math.min(uploadBody.byteLength, 1024)) {
+      throw new Error('התמונה עלתה לאחסון אבל נכשלה באימות. נסה להעלות אותה שוב.');
+    }
+  }
+  return { publicUrl };
 }
 
 function uploadPodcastAudioBytesTus(cfg: ReturnType<typeof supabaseConfig>, bytes: ArrayBuffer, path: string, mimeType: string) {
