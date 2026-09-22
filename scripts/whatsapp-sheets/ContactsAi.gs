@@ -323,32 +323,42 @@ function getAiConfig_() {
 function callOpenAi_(system, user) {
   var cfg = getAiConfig_();
 
-  var response = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'post',
-    contentType: 'application/json',
-    muteHttpExceptions: true,
-    headers: { Authorization: 'Bearer ' + cfg.key },
-    payload: JSON.stringify({
-      model: cfg.model,
-      temperature: 0.2,
-      max_tokens: 700,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ]
-    })
+  var messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: user }
+  ];
+
+  // משפחות המודלים של OpenAI חלוקות בשמות הפרמטרים: הדורות הישנים מקבלים
+  // max_tokens ו-temperature, החדשים דורשים max_completion_tokens ומתעלמים
+  // מ-temperature. מנסים קודם את הישן ונופלים לחדש לפי השגיאה, כדי שהחלפת
+  // מודל בהגדרות לא תשבור כלום.
+  var response = postToOpenAi_(cfg, {
+    model: cfg.model,
+    messages: messages,
+    temperature: 0.2,
+    max_tokens: 900
   });
 
-  var code = response.getResponseCode();
-  var body = response.getContentText();
+  if (response.code === 400 && /max_tokens|temperature|unsupported|unrecognized/i.test(response.body)) {
+    response = postToOpenAi_(cfg, {
+      model: cfg.model,
+      messages: messages,
+      max_completion_tokens: 3000 // אצל מודלי חשיבה גם טוקני החשיבה נספרים כאן
+    });
+  }
 
-  if (code === 401) throw new Error('מפתח OpenAI שגוי או פג תוקף.');
-  if (code === 429) throw new Error('חריגה ממכסת OpenAI. נסו שוב בעוד דקה.');
-  if (code >= 400) throw new Error('OpenAI החזיר ' + code + ': ' + body.substring(0, 300));
+  if (response.code === 401) throw new Error('מפתח OpenAI שגוי או פג תוקף.');
+  if (response.code === 404) {
+    throw new Error('המודל "' + cfg.model + '" לא קיים או לא זמין לחשבון שלכם.');
+  }
+  if (response.code === 429) throw new Error('חריגה ממכסת OpenAI. נסו שוב בעוד דקה.');
+  if (response.code >= 400) {
+    throw new Error('OpenAI החזיר ' + response.code + ': ' + response.body.substring(0, 300));
+  }
 
   var data;
   try {
-    data = JSON.parse(body);
+    data = JSON.parse(response.body);
   } catch (err) {
     throw new Error('תשובה לא תקינה מ-OpenAI.');
   }
@@ -357,5 +367,23 @@ function callOpenAi_(system, user) {
     throw new Error('OpenAI לא החזיר תוכן.');
   }
 
-  return String(data.choices[0].message.content).trim();
+  var content = String(data.choices[0].message.content || '').trim();
+  if (!content) {
+    // קורה כשמודל חשיבה מכלה את התקציב על חשיבה ולא נשאר לו לתשובה.
+    throw new Error('המודל החזיר תשובה ריקה. נסו מודל אחר או העלו את תקציב הטוקנים.');
+  }
+
+  return content;
+}
+
+function postToOpenAi_(cfg, payload) {
+  var response = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + cfg.key },
+    payload: JSON.stringify(payload)
+  });
+
+  return { code: response.getResponseCode(), body: response.getContentText() };
 }
