@@ -112,7 +112,9 @@ function runSummaries_(force) {
       key: key,
       name: String(r[CC_NAME - 1]).trim(),
       aliases: String(r[CC_ALIASES - 1]).trim(),
-      sources: String(r[CC_SOURCES - 1]).trim()
+      sources: String(r[CC_SOURCES - 1]).trim(),
+      previous: summary.indexOf('שגיאת סיכום:') === 0 ? '' : summary,
+      previousAt: summaryAt instanceof Date ? formatDate_(summaryAt) : ''
     });
   }
 
@@ -191,7 +193,7 @@ function buildEvidenceIndex_() {
 
       var entry = {
         label: label,
-        date: String(row[1] || ''),
+        date: row[1] instanceof Date ? formatDate_(row[1]) : String(row[1] || ''),
         sender: String(row[3] || ''),
         phone: String(row[4] || '').replace(/\D/g, ''),
         text: text
@@ -304,6 +306,20 @@ function summarizeOneContact_(contact, evidence) {
   ].join('\n');
 
   var user = buildEvidenceText_(contact, gathered);
+
+  // הכרטיס הקודם נכנס כידע קיים ולא נזרק. הוא נבנה מהודעות שייתכן שכבר
+  // אינן זמינות, אז עובדה שיש בו ואין לה סתירה בחומר החדש צריכה לשרוד.
+  if (contact.previous) {
+    user +=
+      '\n\n### הכרטיס הקודם' +
+      (contact.previousAt ? ' (נכתב ב-' + contact.previousAt + ')' : '') +
+      '\n' + contact.previous +
+      '\n\n### הנחיית מיזוג\n' +
+      'הכרטיס הקודם נבנה מהודעות שאולי כבר אינן בחומר שלפניך. ' +
+      'שמור כל עובדה ממנו שהראיות החדשות אינן סותרות, גם בלי ראיה תומכת עכשיו. ' +
+      'הוסף את מה שחדש. אם החומר החדש סותר עובדה ישנה — העדף את החדש וציין ' +
+      'בסוגריים מה השתנה. אל תמחק פרט רק כי לא ראית לו אישור הפעם.';
+  }
 
   return callOpenAi_(system, user);
 }

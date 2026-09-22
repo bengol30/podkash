@@ -491,14 +491,14 @@ function runExtraction_(rowNumbers) {
 
       var messages = fetchChatHistory_(cfg, target.chatId, cfg.count);
       var label = name || target.chatId;
-      var chatSheet = writeChatSheet_(label, target, messages);
-      var synced = syncContactsFromChat_(label, target, messages);
+      var archive = writeChatSheet_(label, target, messages);
+      var synced = syncContactsFromChat_(label, target, archive.rows);
       contactsAdded += synced.added;
 
-      setHistoryLink_(sheet, row, chatSheet, messages.length);
+      setHistoryLink_(sheet, row, archive.sheet, archive.rows.length);
 
-      var status = messages.length
-        ? target.kindLabel + ' · ' + messages.length + ' הודעות'
+      var status = archive.rows.length
+        ? target.kindLabel + ' · ' + archive.rows.length + ' הודעות בארכיון'
         : target.kindLabel + ' · אין הודעות';
       if (synced.added || synced.updated) {
         status += ' · אנשי קשר: ' + synced.added + ' חדשים, ' + synced.updated + ' עודכנו';
@@ -583,13 +583,44 @@ function fetchChatHistory_(cfg, chatId, count) {
 
 function writeChatSheet_(label, target, messages) {
   var sheetName = buildChatSheetName_(label || target.chatId);
-  var sheet = getOrCreateSheet_(sheetName);
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(sheetName);
+
+  // הלשונית היא ארכיון, לא תמונת מצב. Green API מחזיר רק את ההודעות
+  // האחרונות, אז חילוץ חוזר בעוד חודשיים יביא חלון אחר לגמרי. אם היינו
+  // מוחקים ומחליפים, ההודעות הישנות היו נעלמות — וביחד איתן הראיות
+  // שהסיכום נבנה מהן.
+  var existing = sheet ? readChatRows_(sheet) : [];
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+
+  var incoming = [];
+  for (var m = 0; m < messages.length; m++) {
+    var parsed = parseMessage_(messages[m]);
+    incoming.push([
+      0,
+      parsed.date,
+      parsed.direction,
+      parsed.senderName,
+      parsed.senderPhone,
+      parsed.type,
+      parsed.text,
+      parsed.media,
+      parsed.id
+    ]);
+  }
+
+  var merged = mergeChatRows_(existing, incoming);
+  var addedNow = merged.length - existing.length;
+
   sheet.clear();
 
   sheet.getRange(1, 1, 1, 2).setValues([['שיחה', label]]);
   sheet.getRange(2, 1, 1, 2).setValues([['chatId', target.chatId]]);
   sheet.getRange(3, 1, 1, 2).setValues([['סוג', target.kindLabel]]);
-  sheet.getRange(4, 1, 1, 2).setValues([['נמשך בתאריך', formatDate_(new Date())]]);
+  sheet.getRange(4, 1, 1, 2).setValues([
+    ['חילוץ אחרון', formatDate_(new Date()) + ' · בארכיון ' + merged.length +
+      ' הודעות, מתוכן ' + addedNow + ' חדשות']
+  ]);
   sheet.getRange(1, 1, 4, 1).setFontWeight('bold');
 
   var headerRow = 6;
@@ -600,24 +631,11 @@ function writeChatSheet_(label, target, messages) {
     .setFontColor('#ffffff');
   sheet.setFrozenRows(headerRow);
 
-  var rows = messages.map(function (msg, index) {
-    var parsed = parseMessage_(msg);
-    return [
-      index + 1,
-      parsed.date,
-      parsed.direction,
-      parsed.senderName,
-      parsed.senderPhone,
-      parsed.type,
-      parsed.text,
-      parsed.media,
-      parsed.id
-    ];
-  });
-
-  if (rows.length) {
-    sheet.getRange(headerRow + 1, 1, rows.length, CHAT_HEADERS.length).setValues(rows);
-    sheet.getRange(headerRow + 1, 7, rows.length, 1).setWrap(true);
+  if (merged.length) {
+    for (var i = 0; i < merged.length; i++) merged[i][0] = i + 1;
+    sheet.getRange(headerRow + 1, 1, merged.length, CHAT_HEADERS.length).setValues(merged);
+    sheet.getRange(headerRow + 1, 2, merged.length, 1).setNumberFormat('dd/mm/yyyy hh:mm');
+    sheet.getRange(headerRow + 1, 7, merged.length, 1).setWrap(true);
   } else {
     sheet.getRange(headerRow + 1, 1).setValue('לא נמצאו הודעות בהיסטוריה עבור שיחה זו.');
   }
@@ -632,7 +650,63 @@ function writeChatSheet_(label, target, messages) {
   sheet.setColumnWidth(8, 260);
   sheet.setColumnWidth(9, 200);
 
-  return sheet;
+  return { sheet: sheet, rows: merged };
+}
+
+/** קורא את שורות ההודעות הקיימות בלשונית שיחה. */
+function readChatRows_(sheet) {
+  var firstDataRow = 7;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < firstDataRow) return [];
+
+  var values = sheet.getRange(
+    firstDataRow,
+    1,
+    lastRow - firstDataRow + 1,
+    CHAT_HEADERS.length
+  ).getValues();
+
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    // מדלגים על שורת "לא נמצאו הודעות" ועל שורות ריקות.
+    if (!values[i][8] && !values[i][6]) continue;
+    rows.push(values[i]);
+  }
+  return rows;
+}
+
+/**
+ * ממזג הודעות חדשות לתוך הקיימות. המפתח הוא idMessage, ובהיעדרו
+ * שילוב של זמן, שולח וטקסט. הסדר כרונולוגי עולה.
+ */
+function mergeChatRows_(existing, incoming) {
+  var seen = {};
+  var merged = [];
+
+  function keyOf(row) {
+    var id = String(row[8] || '').trim();
+    if (id) return 'id:' + id;
+    var when = row[1] instanceof Date ? row[1].getTime() : String(row[1]);
+    return 'fallback:' + when + '|' + String(row[4]) + '|' + String(row[6]).substring(0, 120);
+  }
+
+  function add(row) {
+    var key = keyOf(row);
+    if (seen[key]) return;
+    seen[key] = true;
+    merged.push(row);
+  }
+
+  for (var i = 0; i < existing.length; i++) add(existing[i]);
+  for (var j = 0; j < incoming.length; j++) add(incoming[j]);
+
+  merged.sort(function (a, b) {
+    var ta = a[1] instanceof Date ? a[1].getTime() : 0;
+    var tb = b[1] instanceof Date ? b[1].getTime() : 0;
+    return ta - tb;
+  });
+
+  return merged;
 }
 
 function buildChatSheetName_(label) {
@@ -731,7 +805,7 @@ function parseMessage_(msg) {
   var senderPhone = String(senderId).replace(/@.*$/, '');
 
   return {
-    date: msg.timestamp ? formatDate_(new Date(Number(msg.timestamp) * 1000)) : '',
+    date: msg.timestamp ? new Date(Number(msg.timestamp) * 1000) : '',
     direction: direction,
     senderName: msg.senderName || msg.senderContactName || (direction === 'יוצאת' ? 'אני' : ''),
     senderPhone: senderPhone,

@@ -97,18 +97,19 @@ function ensureContactsSheet_() {
  * עובר על ההודעות של שיחה אחת ומחזיר מפה של אנשי קשר לפי טלפון מנורמל.
  * הודעות יוצאות מדולגות — הן שלנו.
  */
-function collectContactsFromMessages_(messages, target) {
+function collectContactsFromRows_(rows, target) {
   var kind = target.kind === 'group' ? KIND_GROUP : KIND_DIRECT;
   var found = {};
 
-  for (var i = 0; i < messages.length; i++) {
-    var parsed = parseMessage_(messages[i]);
-    if (parsed.direction !== 'נכנסת') continue;
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (String(row[2]) !== 'נכנסת') continue; // יוצאות הן שלנו
 
-    var key = String(parsed.senderPhone || '').replace(/\D/g, '');
+    var key = String(row[4] || '').replace(/\D/g, '');
     if (!key) continue;
 
-    var when = messages[i].timestamp ? new Date(Number(messages[i].timestamp) * 1000) : null;
+    var when = row[1] instanceof Date ? row[1] : null;
+    var senderName = String(row[3] || '').trim();
     var entry = found[key];
 
     if (!entry) {
@@ -123,7 +124,7 @@ function collectContactsFromMessages_(messages, target) {
     }
 
     entry.count++;
-    if (parsed.senderName && !entry.name) entry.name = String(parsed.senderName).trim();
+    if (senderName && !entry.name) entry.name = senderName;
     if (when) {
       if (!entry.first || when < entry.first) entry.first = when;
       if (!entry.last || when > entry.last) entry.last = when;
@@ -137,12 +138,10 @@ function collectContactsFromMessages_(messages, target) {
   return out;
 }
 
-/**
- * ממזג את אנשי הקשר של שיחה אחת לתוך הלשונית. נקרא מ-runExtraction_.
- * מחזיר {added, updated}.
- */
-function syncContactsFromChat_(label, target, messages) {
-  var contacts = collectContactsFromMessages_(messages, target);
+function syncContactsFromChat_(label, target, rows) {
+  // rows הן שורות הארכיון המלא של השיחה, לא רק החלון שנמשך עכשיו,
+  // כך שהספירה ב"מקורות" משקפת את כל מה שידוע ולא את המשיכה האחרונה.
+  var contacts = collectContactsFromRows_(rows, target);
   if (!contacts.length) return { added: 0, updated: 0 };
 
   var sheet = ensureContactsSheet_();
