@@ -14,7 +14,7 @@ var DEFAULT_LIVE_WINDOW_DAYS = 30;
 var ALL_CHATS_HEADERS = [
   'ציון',
   'שם',
-  'סוג',
+  'טלפון',
   'chatId',
   'הודעות',
   'ימים פעילים',
@@ -69,7 +69,10 @@ function syncLiveActivity() {
 
   alert_(
     'סונכרן מווטסאפ.\n\n' +
-      'שיחות: ' + written + '\n' +
+      'שיחות פרטיות: ' + written.written + '\n' +
+      (written.skipped
+        ? 'הושמטו ' + written.skipped + ' אנשי קשר בלי פעילות בחלון\n'
+        : '') +
       ranked + '\n' +
       'הודעות ביומן: ' + journal.entries.length + '\n' +
       'היומן כיסה בפועל: ' + journal.coveredDays + ' ימים\n' +
@@ -252,7 +255,11 @@ function writeAllChatsSheet_(built, roster, journal) {
   sheet.clear();
 
   sheet.getRange(1, 1, 1, 2).setValues([
-    ['סונכרן', formatDate_(new Date()) + ' · יומן של ' + journal.coveredDays + ' ימים']
+    [
+      'סונכרן',
+      formatDate_(new Date()) + ' · יומן של ' + journal.coveredDays + ' ימים · ' +
+        'שיחות פרטיות בלבד (קבוצות בלשונית "' + GROUPS_SHEET + '")'
+    ]
   ]);
   sheet.getRange(1, 1).setFontWeight('bold');
 
@@ -264,24 +271,40 @@ function writeAllChatsSheet_(built, roster, journal) {
     .setFontColor('#ffffff');
   sheet.setFrozenRows(headerRow);
 
-  // כל צ׳אט שיש לו פעילות, ובנוסף כל צ׳אט מהרשימה גם בלי פעילות.
+  // רק שיחות פרטיות. לקבוצות יש לשונית משלהן עם אותם ציונים, ובאותה
+  // טבלה הן היו מציפות את אנשי הקשר בלי להוסיף מידע.
+  //
+  // getContacts מחזיר גם אנשי קשר מהפנקס שמעולם לא התכתבת איתם. שורות
+  // בציון אפס אינן "שיחות", והן היו קוברות את הרשימה — אז הן מושמטות,
+  // אלא אם הן כבר יעד חילוץ בגיליון הראשי.
+  var keepAnyway = mainSheetPhones_();
+
   var ids = {};
   for (var id in built.chats) if (built.chats.hasOwnProperty(id)) ids[id] = true;
   for (var rid in roster) if (roster.hasOwnProperty(rid)) ids[rid] = true;
 
   var rows = [];
+  var skipped = 0;
+
   for (var chatId in ids) {
     if (!ids.hasOwnProperty(chatId)) continue;
+    if (chatId.indexOf('@g.us') !== -1) continue;
 
     var st = built.chats[chatId];
+    var phone = chatId.replace(/@.*$/, '').replace(/\D/g, '');
+
+    if ((!st || !st.messages) && !keepAnyway[phone]) {
+      skipped++;
+      continue;
+    }
+
     var info = roster[chatId] || {};
     var scored = scoreOf_(st, built.maxChat, 'chat');
-    var isGroup = chatId.indexOf('@g.us') !== -1;
 
     rows.push([
       scored.score,
-      info.name || (st && st.name) || chatId.replace(/@.*$/, ''),
-      isGroup ? 'קבוצה' : 'איש קשר',
+      info.name || (st && st.name) || phone,
+      phone,
       chatId,
       st ? st.messages : 0,
       st ? countKeys_(st.activeDays) : 0,
@@ -310,7 +333,33 @@ function writeAllChatsSheet_(built, roster, journal) {
   sheet.setColumnWidth(9, 140);
   sheet.setColumnWidth(11, 300);
 
-  return rows.length;
+  return { written: rows.length, skipped: skipped };
+}
+
+/** מספרי הטלפון שכבר משמשים כיעדי חילוץ בגיליון הראשי. */
+function mainSheetPhones_() {
+  var phones = {};
+
+  try {
+    var main = getMainSheet_();
+    var last = main.getLastRow();
+    if (last < 2) return phones;
+
+    var country = PropertiesService.getDocumentProperties().getProperty(PROP_COUNTRY) ||
+      DEFAULT_COUNTRY;
+    var values = main.getRange(2, COL_PHONE, last - 1, 1).getValues();
+
+    for (var i = 0; i < values.length; i++) {
+      var raw = String(values[i][0]).trim();
+      if (!raw) continue;
+      var digits = normalizePhone_(raw, country);
+      if (digits) phones[digits] = true;
+    }
+  } catch (err) {
+    Logger.log('mainSheetPhones_: ' + err.message);
+  }
+
+  return phones;
 }
 
 function trendLabel_(st) {
