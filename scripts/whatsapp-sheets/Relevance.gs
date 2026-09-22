@@ -336,8 +336,9 @@ function rankGroupsSheet_(stats) {
   var last = sheet.getLastRow();
   if (last < 2) return 'קבוצות: אין שורות';
 
-  var scoreCol = 4;
+  var scoreCol = GROUPS_COL_SCORE;
   ensureScoreHeaders_(sheet, scoreCol);
+  ensureGroupsButtons_(sheet);
 
   var values = sheet.getRange(2, 1, last - 1, 3).getValues();
   var rows = values.map(function (r) {
@@ -346,6 +347,9 @@ function rankGroupsSheet_(stats) {
     return scoreOf_(st, stats.maxChat, 'chat');
   });
 
-  var n = writeScoresAndSort_(sheet, 2, 3, scoreCol, rows);
+  // רוחב המיון כולל את תיבת הסימון והסטטוס, אחרת הם היו נשארים במקומם
+  // בזמן שהשמות זזים — וכל סטטוס היה מתייחס לקבוצה אחרת.
+  var n = writeScoresAndSort_(sheet, 2, GROUPS_TOTAL_COLS, scoreCol, rows);
+  ensureGroupsButtons_(sheet);
   return 'קבוצות: ' + n + ' שורות';
 }

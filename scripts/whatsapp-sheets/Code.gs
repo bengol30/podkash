@@ -67,6 +67,7 @@ function onOpen() {
     .addItem('2. בדיקת חיבור', 'testConnection')
     .addSeparator()
     .addItem('3. רענון רשימת הקבוצות', 'refreshGroups')
+    .addItem('הוספת הקבוצות המסומנות לחילוץ', 'addCheckedGroupsToMain')
     .addSeparator()
     .addItem('משיכת היסטוריה — השורה הנוכחית', 'extractCurrentRow')
     .addItem('משיכת היסטוריה — כל השורות', 'extractAllRows')
@@ -310,6 +311,7 @@ function refreshGroups() {
     sheet.setColumnWidth(1, 260);
     sheet.setColumnWidth(2, 220);
     sheet.setColumnWidth(3, 240);
+    ensureGroupsButtons_(sheet);
 
     ui.alert('נמצאו ' + groups.length + ' קבוצות. הרשימה נשמרה בלשונית "' + GROUPS_SHEET + '".');
   } catch (err) {

@@ -413,5 +413,6 @@ function syncGroupsRosterInto_(roster) {
     sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 3).setValues(additions);
   }
 
+  ensureGroupsButtons_(sheet);
   return additions.length;
 }
