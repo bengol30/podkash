@@ -301,17 +301,25 @@ function fetchGroups_(cfg) {
     }
   }
 
+  var failures = [];
+
   try {
     collect(callGreenApi_(cfg, 'getContacts', null));
   } catch (err) {
-    Logger.log('getContacts נכשל: ' + err.message);
+    failures.push('getContacts: ' + err.message);
   }
 
   try {
     collect(callGreenApi_(cfg, 'getChats', null));
   } catch (err) {
-    Logger.log('getChats נכשל: ' + err.message);
+    failures.push('getChats: ' + err.message);
   }
+
+  // שתי השיטות נכשלו — זו שגיאה אמיתית, לא חשבון בלי קבוצות.
+  if (failures.length === 2) {
+    throw new Error('לא הצלחנו למשוך את רשימת הצ׳אטים מ-Green API.\n' + failures.join('\n'));
+  }
+  for (var f = 0; f < failures.length; f++) Logger.log(failures[f]);
 
   var out = [];
   for (var key in found) {
