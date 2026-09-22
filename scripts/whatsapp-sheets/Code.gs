@@ -75,7 +75,9 @@ function onOpen() {
     .addItem('סיכום AI לאנשי קשר', 'summarizeContacts')
     .addItem('סיכום AI — רענון מלא', 'summarizeContactsForce')
     .addSeparator()
-    .addItem('עדכון דירוג רלוונטיות', 'updateRelevanceRanking')
+    .addItem('סנכרון פעילות מווטסאפ (חי)', 'syncLiveActivity')
+    .addItem('הגדרת חלון הפעילות', 'setupLiveWindow')
+    .addItem('דירוג לפי הגיליון בלבד', 'updateRelevanceRanking')
     .addSeparator()
     .addItem('אתחול מבנה הגיליון', 'initSheet')
     .addToUi();
@@ -172,8 +174,9 @@ function getConfig_() {
 
 /* =========================== קריאות ל-Green API =========================== */
 
-function callGreenApi_(cfg, method, payload) {
+function callGreenApi_(cfg, method, payload, query) {
   var url = cfg.apiUrl + '/waInstance' + cfg.idInstance + '/' + method + '/' + cfg.token;
+  if (query) url += '?' + query;
 
   var options = {
     method: payload ? 'post' : 'get',
