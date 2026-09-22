@@ -1,0 +1,285 @@
+{
+  "name": "ווצאפ — חילוץ הסטוריית שיחה לשיטס",
+  "flow": [
+    {
+      "id": 1,
+      "module": "google-sheets:filterRows",
+      "version": 2,
+      "parameters": {
+        "__IMTCONN__": 5468965
+      },
+      "mapper": {
+        "from": "share",
+        "limit": "50",
+        "filter": [
+          [
+            {
+              "a": "A",
+              "o": "exist"
+            }
+          ]
+        ],
+        "sheetId": "גיליון1",
+        "sortOrder": "asc",
+        "spreadsheetId": "19pV44x9BU-fUVUJr13_poMCestdicupFx5jfLaON3Lg",
+        "tableFirstRow": "A1:Z1",
+        "includesHeaders": true,
+        "valueRenderOption": "FORMATTED_VALUE",
+        "dateTimeRenderOption": "FORMATTED_STRING"
+      },
+      "metadata": {
+        "designer": {
+          "x": -600,
+          "y": 0
+        }
+      }
+    },
+    {
+      "id": 2,
+      "module": "builtin:BasicRouter",
+      "version": 1,
+      "mapper": null,
+      "metadata": {
+        "designer": {
+          "x": -300,
+          "y": 0
+        }
+      },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 3,
+              "module": "green-api:GetChatHistory",
+              "version": 1,
+              "parameters": {
+                "__IMTCONN__": 6105010
+              },
+              "mapper": {
+                "count": "100",
+                "chatId": "{{if(substring(replace(1.`1`; \"/\\D/g\"; \"\"); 0; 2) = \"00\"; substring(replace(1.`1`; \"/\\D/g\"; \"\"); 2; 20); if(substring(replace(1.`1`; \"/\\D/g\"; \"\"); 0; 3) = \"972\"; replace(1.`1`; \"/\\D/g\"; \"\"); if(substring(replace(1.`1`; \"/\\D/g\"; \"\"); 0; 1) = \"0\"; \"972\" + substring(replace(1.`1`; \"/\\D/g\"; \"\"); 1; 20); \"972\" + replace(1.`1`; \"/\\D/g\"; \"\"))))}}@c.us",
+                "format": false,
+                "chatIdSource": "manual"
+              },
+              "metadata": {
+                "designer": {
+                  "x": -300,
+                  "y": -180
+                }
+              },
+              "filter": {
+                "name": "איש קשר — יש טלפון",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{1.`1`}}",
+                      "o": "exist"
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "id": 4,
+              "module": "util:TextAggregator",
+              "version": 1,
+              "parameters": {
+                "feeder": 3,
+                "rowSeparator": "\n"
+              },
+              "mapper": {
+                "value": "{{formatDate(parseDate(3.timestamp; \"X\"); \"DD/MM/YYYY HH:mm\")}} | {{if(3.type = \"outgoing\"; \"אני\"; ifempty(3.senderName; 3.senderId))}} | {{ifempty(3.textMessage; 3.typeMessage)}}"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 0,
+                  "y": -180
+                }
+              }
+            },
+            {
+              "id": 5,
+              "module": "google-sheets:updateRow",
+              "version": 2,
+              "parameters": {
+                "__IMTCONN__": 5468965
+              },
+              "mapper": {
+                "mode": "fromAll",
+                "values": {
+                  "3": "{{substring(4.text; 0; 49000)}}"
+                },
+                "sheetId": "גיליון1",
+                "rowNumber": "{{1.`__ROW_NUMBER__`}}",
+                "spreadsheetId": "19pV44x9BU-fUVUJr13_poMCestdicupFx5jfLaON3Lg",
+                "includesHeaders": true,
+                "valueInputOption": "USER_ENTERED"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 300,
+                  "y": -180
+                }
+              }
+            }
+          ]
+        },
+        {
+          "flow": [
+            {
+              "id": 6,
+              "module": "green-api:GetContacts",
+              "version": 1,
+              "parameters": {
+                "__IMTCONN__": 6105010
+              },
+              "mapper": {
+                "limit": "10000"
+              },
+              "filter": {
+                "name": "קבוצה — אין טלפון",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{1.`1`}}",
+                      "o": "notexist"
+                    }
+                  ]
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": -300,
+                  "y": 180
+                }
+              }
+            },
+            {
+              "id": 7,
+              "module": "google-sheets:updateRow",
+              "version": 2,
+              "parameters": {
+                "__IMTCONN__": 5468965
+              },
+              "filter": {
+                "name": "התאמת שם הקבוצה",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{6.type}}",
+                      "b": "group",
+                      "o": "text:equal:ci"
+                    },
+                    {
+                      "a": "{{6.name}}",
+                      "b": "{{1.`0`}}",
+                      "o": "text:contain:ci"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "mode": "fromAll",
+                "values": {
+                  "2": "{{6.id}}"
+                },
+                "sheetId": "גיליון1",
+                "rowNumber": "{{1.`__ROW_NUMBER__`}}",
+                "spreadsheetId": "19pV44x9BU-fUVUJr13_poMCestdicupFx5jfLaON3Lg",
+                "includesHeaders": true,
+                "valueInputOption": "USER_ENTERED"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 0,
+                  "y": 180
+                }
+              }
+            },
+            {
+              "id": 8,
+              "module": "green-api:GetChatHistory",
+              "version": 1,
+              "parameters": {
+                "__IMTCONN__": 6105010
+              },
+              "mapper": {
+                "count": "100",
+                "chatId": "{{6.id}}",
+                "format": false,
+                "chatIdSource": "manual"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 300,
+                  "y": 180
+                }
+              }
+            },
+            {
+              "id": 9,
+              "module": "util:TextAggregator",
+              "version": 1,
+              "parameters": {
+                "feeder": 8,
+                "rowSeparator": "\n"
+              },
+              "mapper": {
+                "value": "{{formatDate(parseDate(8.timestamp; \"X\"); \"DD/MM/YYYY HH:mm\")}} | {{if(8.type = \"outgoing\"; \"אני\"; ifempty(8.senderName; 8.senderId))}} | {{ifempty(8.textMessage; 8.typeMessage)}}"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 600,
+                  "y": 180
+                }
+              }
+            },
+            {
+              "id": 10,
+              "module": "google-sheets:updateRow",
+              "version": 2,
+              "parameters": {
+                "__IMTCONN__": 5468965
+              },
+              "mapper": {
+                "mode": "fromAll",
+                "values": {
+                  "3": "{{substring(9.text; 0; 49000)}}"
+                },
+                "sheetId": "גיליון1",
+                "rowNumber": "{{1.`__ROW_NUMBER__`}}",
+                "spreadsheetId": "19pV44x9BU-fUVUJr13_poMCestdicupFx5jfLaON3Lg",
+                "includesHeaders": true,
+                "valueInputOption": "USER_ENTERED"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": 180
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "instant": false,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": true,
+      "confidential": false,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": {
+      "orphans": []
+    }
+  }
+}
