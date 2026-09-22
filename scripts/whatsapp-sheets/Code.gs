@@ -460,6 +460,17 @@ function normalizePhone_(raw, countryCode) {
 
 function extractCurrentRow() {
   var sheet = getMainSheet_();
+
+  // getActiveRange הוא מושג ברמת הגיליון כולו. בלי הבדיקה הזו, לחיצה
+  // מתוך לשונית אחרת הייתה מחלצת שורה באותו מספר בגיליון הראשי —
+  // יעד אחר לגמרי, בלי אזהרה.
+  var active = SpreadsheetApp.getActive().getActiveSheet();
+  if (active.getName() !== sheet.getName()) {
+    alert_('הפעולה הזו עובדת על הלשונית "' + sheet.getName() + '".\n' +
+      'עברו אליה, בחרו שורה, ונסו שוב.');
+    return;
+  }
+
   var row = sheet.getActiveRange() ? sheet.getActiveRange().getRow() : 0;
   if (row < 2) {
     alert_('בחרו שורה עם איש קשר או קבוצה (משורה 2 ומטה).');
@@ -488,6 +499,8 @@ function runExtraction_(rowNumbers) {
     alert_('שגיאה: ' + err.message);
     return;
   }
+
+  migrateChatSheetNames_();
 
   var sheet = getMainSheet_();
   var groups = null;
@@ -565,6 +578,24 @@ function resolveTarget_(cfg, input) {
   if (input.groupId) {
     var raw = input.groupId.replace(/\s+/g, '');
     var chatId = raw.indexOf('@') !== -1 ? raw : raw + '@g.us';
+
+    // אם גם השם מולא, הוא עלול להצביע לקבוצה אחרת — למשל אחרי ששינו את
+    // השם בעמודה A בלי לנקות את ה-id. לא מנחשים מי מנצח: עוצרים ואומרים.
+    if (input.name) {
+      var named = null;
+      try {
+        named = findGroupByName_(input.getGroups(), input.name);
+      } catch (err) {
+        named = null; // שם עמום מטופל במסלול 3, לא כאן
+      }
+      if (named && named.chatId !== chatId) {
+        throw new Error(
+          'השם "' + input.name + '" מצביע לקבוצה ' + named.chatId +
+          ' אבל בעמודה C רשום ' + chatId + '. נקו אחת מהן.'
+        );
+      }
+    }
+
     return { chatId: chatId, kind: 'group', kindLabel: 'קבוצה', groupShortId: '' };
   }
 
@@ -615,7 +646,7 @@ function fetchChatHistory_(cfg, chatId, count) {
 /* =========================== כתיבת ההודעות =========================== */
 
 function writeChatSheet_(label, target, messages) {
-  var sheetName = buildChatSheetName_(label || target.chatId);
+  var sheetName = buildChatSheetName_(label || target.chatId, target.chatId);
   var ss = SpreadsheetApp.getActive();
   var sheet = ss.getSheetByName(sheetName);
 
@@ -742,11 +773,81 @@ function mergeChatRows_(existing, incoming) {
   return merged;
 }
 
-function buildChatSheetName_(label) {
-  var clean = String(label).replace(/[\[\]\*\/\\\?:]/g, ' ').replace(/\s+/g, ' ').trim();
-  var name = CHAT_SHEET_PREFIX + clean;
-  if (name.length > 95) name = name.substring(0, 95);
-  return name;
+/**
+ * שם לשונית השיחה נושא סיומת של ה-chatId.
+ *
+ * בלי הסיומת השם נגזר מהתווית בלבד, ותוויות אינן ייחודיות: שתי שורות
+ * באותו שם — אחת קבוצה ואחת איש קשר — היו כותבות לאותה לשונית ומערבבות
+ * שתי שיחות לארכיון אחד. גם החיטוי יוצר התנגשויות: "פרויקט A/B"
+ * ו-"פרויקט A B" מתנרמלים לאותו שם. ה-chatId ייחודי, אז הוא מכריע.
+ */
+function buildChatSheetName_(label, chatId) {
+  var id = String(chatId == null ? '' : chatId).replace(/@.*$/, '').replace(/[^0-9A-Za-z]/g, '');
+  var suffix = id ? ' [' + id + ']' : '';
+
+  var clean = String(label == null ? '' : label)
+    .replace(/[\[\]\*\/\\\?:]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  var maxLabel = 95 - CHAT_SHEET_PREFIX.length - suffix.length;
+  if (maxLabel < 1) maxLabel = 1;
+  if (clean.length > maxLabel) clean = clean.substring(0, maxLabel).trim();
+
+  return CHAT_SHEET_PREFIX + clean + suffix;
+}
+
+/** מפרק שם לשונית שיחה חזרה לתווית ולמזהה. */
+function parseChatSheetName_(sheetName) {
+  var rest = String(sheetName).substring(CHAT_SHEET_PREFIX.length);
+  var match = rest.match(/^(.*?)\s\[([0-9A-Za-z]+)\]$/);
+
+  if (match) return { label: match[1].trim(), id: match[2] };
+  return { label: rest.trim(), id: '' };
+}
+
+/**
+ * מעבר חד-פעמי, בטוח להרצה חוזרת: לשוניות שנוצרו לפני שהסיומת נוספה
+ * מקבלות שם חדש לפי ה-chatId השמור בתא B2. שינוי שם משמר את כל הנתונים
+ * ואת הקישורים בעמודה "הסטוריה", כי הם מצביעים ל-gid ולא לשם.
+ */
+function migrateChatSheetNames_() {
+  var ss = SpreadsheetApp.getActive();
+  var sheets = ss.getSheets();
+
+  var taken = {};
+  for (var t = 0; t < sheets.length; t++) taken[sheets[t].getName()] = true;
+
+  var renamed = 0;
+  var blocked = 0;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var sheet = sheets[i];
+    var current = sheet.getName();
+    if (current.indexOf(CHAT_SHEET_PREFIX) !== 0) continue;
+    if (parseChatSheetName_(current).id) continue; // כבר במבנה החדש
+
+    var chatId = String(sheet.getRange(2, 2).getValue()).trim();
+    if (!chatId) continue; // בלי chatId אין לנו במה לזהות אותה
+
+    var wanted = buildChatSheetName_(parseChatSheetName_(current).label, chatId);
+    if (wanted === current) continue;
+
+    if (taken[wanted]) {
+      // כבר קיימת לשונית בשם היעד. זו התנגשות אמיתית שקרתה בעבר,
+      // ומיזוג אוטומטי שלהן עלול לאבד נתונים — משאירים למשתמש.
+      logLine_('MIGRATION', current, chatId, 'שם היעד תפוס: ' + wanted);
+      blocked++;
+      continue;
+    }
+
+    delete taken[current];
+    sheet.setName(wanted);
+    taken[wanted] = true;
+    renamed++;
+  }
+
+  return { renamed: renamed, blocked: blocked };
 }
 
 function parseMessage_(msg) {

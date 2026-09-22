@@ -183,7 +183,7 @@ function buildEvidenceIndex_() {
     var lastRow = sheet.getLastRow();
     if (lastRow < CHAT_DATA_FIRST_ROW) continue;
 
-    var label = name.substring(CHAT_SHEET_PREFIX.length);
+    var label = parseChatSheetName_(name).label;
     var values = sheet.getRange(
       CHAT_DATA_FIRST_ROW,
       1,

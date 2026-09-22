@@ -116,13 +116,23 @@ function findGroupInMain_(main, groupId, name) {
   var values = main.getRange(2, 1, last - 1, 3).getValues();
   var needle = normalizeText_(name);
 
+  // מזהים גוברים על שמות. התאמה לפי שם בלבד הייתה מזהה קבוצה ואיש קשר
+  // שנקראים אותו דבר כאותה שורה, ומונעת הוספה לגיטימית.
   for (var i = 0; i < values.length; i++) {
     var rowGroupId = String(values[i][COL_GROUP_ID - 1]).replace('@g.us', '').trim();
     if (groupId && rowGroupId && rowGroupId === groupId) return i + 2;
-
-    var rowName = normalizeText_(values[i][COL_NAME - 1]);
-    if (needle && rowName && rowName === needle) return i + 2;
   }
+
+  if (!needle) return 0;
+
+  for (var j = 0; j < values.length; j++) {
+    var rowId = String(values[j][COL_GROUP_ID - 1]).trim();
+    if (rowId) continue; // לשורה יש id משלה, והוא לא תאם — לא אותה קבוצה
+    if (String(values[j][COL_PHONE - 1]).trim()) continue; // שורת איש קשר
+
+    if (normalizeText_(values[j][COL_NAME - 1]) === needle) return j + 2;
+  }
+
   return 0;
 }
 

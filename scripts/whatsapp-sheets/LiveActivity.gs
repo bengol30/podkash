@@ -28,6 +28,8 @@ var ALL_CHATS_HEADERS = [
 /* =========================== נקודת כניסה =========================== */
 
 function syncLiveActivity() {
+  migrateChatSheetNames_();
+
   var cfg;
   try {
     cfg = getConfig_();

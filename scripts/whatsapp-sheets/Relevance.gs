@@ -28,6 +28,8 @@ var W_TREND = 0.10;
 /* =========================== נקודת כניסה =========================== */
 
 function updateRelevanceRanking() {
+  migrateChatSheetNames_();
+
   var stats;
   try {
     stats = buildActivityStats_();
@@ -89,7 +91,7 @@ function buildActivityStats_() {
     var lastRow = sheet.getLastRow();
     if (lastRow < CHAT_DATA_FIRST_ROW) continue;
 
-    var label = sheetName.substring(CHAT_SHEET_PREFIX.length);
+    var label = parseChatSheetName_(sheetName).label;
     var chatId = String(sheet.getRange(2, 2).getValue()).trim();
 
     var chat = chats[label] = blank();
