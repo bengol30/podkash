@@ -26,6 +26,7 @@ var CC_LAST = 9;          // הודעה אחרונה
 var CC_SUMMARY = 10;      // סיכום AI
 var CC_SUMMARY_AT = 11;   // עודכן סיכום
 var CC_NOTES = 12;        // הערות ידניות - הקוד לא נוגע
+var CC_CHANGELOG = 13;    // יומן שינויים - נצבר, החדש למעלה
 
 var CONTACTS_HEADERS = [
   'מזהה',
@@ -39,7 +40,8 @@ var CONTACTS_HEADERS = [
   'הודעה אחרונה',
   'סיכום AI',
   'עודכן סיכום',
-  'הערות ידניות'
+  'הערות ידניות',
+  'יומן שינויים'
 ];
 
 var KIND_DIRECT = 'איש קשר';
@@ -59,7 +61,21 @@ function ensureContactsSheet_() {
   }
 
   var header = sheet.getRange(1, 1, 1, CONTACTS_HEADERS.length);
-  if (created || String(header.getValue()).trim() !== CONTACTS_HEADERS[0]) {
+
+  // גיליון שנוצר לפני שנוספה עמודה צריך לקבל את הכותרות החדשות.
+  // כתיבת שורת הכותרות לא נוגעת בנתונים שמתחתיה.
+  var stale = created;
+  if (!stale) {
+    var current = header.getValues()[0];
+    for (var h = 0; h < CONTACTS_HEADERS.length; h++) {
+      if (String(current[h]).trim() !== CONTACTS_HEADERS[h]) {
+        stale = true;
+        break;
+      }
+    }
+  }
+
+  if (stale) {
     header.setValues([CONTACTS_HEADERS])
       .setFontWeight('bold')
       .setBackground('#075E54')
@@ -79,6 +95,7 @@ function ensureContactsSheet_() {
     sheet.setColumnWidth(CC_SUMMARY, 560);
     sheet.setColumnWidth(CC_SUMMARY_AT, 130);
     sheet.setColumnWidth(CC_NOTES, 260);
+    sheet.setColumnWidth(CC_CHANGELOG, 420);
 
     sheet.getRange(1, CC_KEY, sheet.getMaxRows(), 1).setNumberFormat('@');
     sheet.getRange(1, CC_PHONE, sheet.getMaxRows(), 1).setNumberFormat('@');
@@ -242,7 +259,7 @@ function mergeContactRow_(sheet, row, contact, label) {
     }
   }
 
-  // סיכום AI והערות ידניות לא נגענו בהם בכוונה.
+  // סיכום AI, הערות ידניות ויומן השינויים לא נגענו בהם בכוונה.
 }
 
 function addAlias_(sheet, row, name) {

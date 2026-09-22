@@ -16,7 +16,11 @@ var MAX_MENTIONS = 25;
 var MAX_EVIDENCE_CHARS = 12000;
 var TIME_BUDGET_MS = 270000; // 4.5 דקות מתוך 6 של Apps Script
 
-var CHAT_DATA_FIRST_ROW = 7; // הכותרות בלשונית שיחה יושבות בשורה 6
+var CHAT_DATA_FIRST_ROW = 7;
+
+var CARD_DELIM = '===כרטיס===';
+var CHANGES_DELIM = '===שינויים===';
+var MAX_CHANGELOG_CHARS = 45000; // הכותרות בלשונית שיחה יושבות בשורה 6
 
 /* =========================== הגדרת המפתח =========================== */
 
@@ -137,9 +141,10 @@ function runSummaries_(force) {
 
     var contact = pending[p];
     try {
-      var text = summarizeOneContact_(contact, evidence);
-      sheet.getRange(contact.row, CC_SUMMARY).setValue(text).setWrap(true);
+      var result = summarizeOneContact_(contact, evidence);
+      sheet.getRange(contact.row, CC_SUMMARY).setValue(result.card).setWrap(true);
       sheet.getRange(contact.row, CC_SUMMARY_AT).setValue(new Date());
+      if (contact.previous) prependChangelog_(sheet, contact.row, result.changes);
       done++;
     } catch (err) {
       sheet.getRange(contact.row, CC_SUMMARY).setValue('שגיאת סיכום: ' + err.message);
@@ -282,25 +287,46 @@ function summarizeOneContact_(contact, evidence) {
   var gathered = gatherEvidenceFor_(contact, evidence);
 
   if (!gathered.own.length && !gathered.mentions.length) {
-    return 'אין מספיק חומר לסיכום — לא נמצאו הודעות של איש הקשר הזה ולא אזכורים שלו.';
+    return {
+      card: 'אין מספיק חומר לסיכום — לא נמצאו הודעות של איש הקשר הזה ולא אזכורים שלו.',
+      changes: ''
+    };
   }
 
   var system = [
-    'אתה בונה כרטיס מידע תמציתי על איש קשר, על בסיס הודעות ווטסאפ בלבד.',
+    'אתה בונה כרטיס מידע על איש קשר מתוך הודעות ווטסאפ, ומתחזק אותו לאורך זמן.',
+    '',
+    'החזר תמיד שני חלקים, בדיוק במבנה הזה:',
+    '',
+    CARD_DELIM,
+    '<הכרטיס המלא והמעודכן>',
+    CHANGES_DELIM,
+    '<מה השתנה מאז הכרטיס הקודם>',
     '',
     'חוקים מחייבים:',
     '- כתוב אך ורק מה שנתמך ישירות בהודעות שלפניך.',
     '- אל תשלים פרטים מהידע הכללי שלך. אם השם מוכר לך מהעולם, התעלם מזה לחלוטין.',
-    '- מה שלא ידוע — פשוט לא מופיע. אל תכתוב "לא ידוע" ואל תנחש.',
-    '- מסקנה שמשתמעת אך לא נאמרה במפורש — סמן אותה ב-(משוער).',
-    '- כרטיס קצר ונכון עדיף על כרטיס ארוך ומנוחש.',
+    '- מה שלא ידוע פשוט לא מופיע. אל תכתוב "לא ידוע" ואל תנחש.',
+    '- מסקנה שמשתמעת אך לא נאמרה במפורש — סמן ב-(משוער).',
     '',
-    'מבנה (השמט כל סעיף שאין לגביו חומר):',
+    'מבנה הכרטיס (השמט כל סעיף שאין לגביו חומר):',
     '**תפקיד ועיסוק**',
     '**נושאים שחוזרים אצלו**',
     '**פרטים מעשיים** — מקום, זמינות, כלים, קישורים, תאריכים שהזכיר',
     '**סגנון תקשורת**',
-    '**פתוח מולו** — משימות או שאלות שנשארו תלויות',
+    '**פתוח מולו** — רק מה שעדיין פתוח באמת כרגע',
+    '',
+    'חלק השינויים:',
+    '- אם אין כרטיס קודם, כתוב שורה אחת: כרטיס ראשון.',
+    '- אם יש כרטיס קודם, עבור אחד-אחד על הפריטים שהיו תחת "פתוח מולו" שלו',
+    '  וקבע מה קרה לכל אחד לפי החומר החדש. פריט שנסגר חייב לעבור לכאן',
+    '  ולהיעלם מ"פתוח מולו" בכרטיס.',
+    '- כתוב בשורות שמתחילות באחד מאלה:',
+    '  [הושלם] — משימה או שאלה שנסגרה, עם מה שסגר אותה',
+    '  [התקדם] — נושא שזז אבל עוד לא נסגר, ולאן הגיע',
+    '  [חדש] — מידע שלא היה בכרטיס הקודם',
+    '  [השתנה] — עובדה שהתחלפה: מה היה ומה עכשיו',
+    '- אם באמת שום דבר מהותי לא השתנה, כתוב שורה אחת: ללא שינוי מהותי.',
     '',
     'כתוב בעברית, בנקודות קצרות. בלי הקדמה ובלי סיכום מסכם.'
   ].join('\n');
@@ -317,11 +343,13 @@ function summarizeOneContact_(contact, evidence) {
       '\n\n### הנחיית מיזוג\n' +
       'הכרטיס הקודם נבנה מהודעות שאולי כבר אינן בחומר שלפניך. ' +
       'שמור כל עובדה ממנו שהראיות החדשות אינן סותרות, גם בלי ראיה תומכת עכשיו. ' +
-      'הוסף את מה שחדש. אם החומר החדש סותר עובדה ישנה — העדף את החדש וציין ' +
-      'בסוגריים מה השתנה. אל תמחק פרט רק כי לא ראית לו אישור הפעם.';
+      'אל תמחק פרט רק כי לא ראית לו אישור הפעם.\n' +
+      'השווה את הכרטיס הקודם לחומר החדש ודווח על ההפרש בחלק השינויים: ' +
+      'משימות שנסגרו, נושאים שהתקדמו, עובדות שהתחלפו ומידע חדש. ' +
+      'פריט שהיה "פתוח מולו" ונסגר — הוצא אותו מהכרטיס ורשום אותו כ-[הושלם].';
   }
 
-  return callOpenAi_(system, user);
+  return splitCardAndChanges_(callOpenAi_(system, user));
 }
 
 function getAiConfig_() {
@@ -402,4 +430,46 @@ function postToOpenAi_(cfg, payload) {
   });
 
   return { code: response.getResponseCode(), body: response.getContentText() };
+}
+
+
+/* =========================== פירוק ויומן =========================== */
+
+/**
+ * המודל מחזיר כרטיס וחלק שינויים מופרדים במפריד. אם המפריד חסר
+ * מסיבה כלשהי, כל הפלט נחשב לכרטיס — עדיף כרטיס בלי יומן מאשר כלום.
+ */
+function splitCardAndChanges_(raw) {
+  var text = String(raw || '').trim();
+  var changesAt = text.indexOf(CHANGES_DELIM);
+
+  var card = changesAt === -1 ? text : text.substring(0, changesAt);
+  var changes = changesAt === -1 ? '' : text.substring(changesAt + CHANGES_DELIM.length);
+
+  card = card.replace(CARD_DELIM, '').trim();
+  changes = changes.trim();
+
+  return { card: card, changes: changes };
+}
+
+/**
+ * מוסיף רשומה ליומן השינויים. החדש למעלה, הישן נשאר מתחתיו.
+ * נחתך מהסוף כשמתקרבים למגבלת התא של גוגל שיטס.
+ */
+function prependChangelog_(sheet, row, changes) {
+  var trimmed = String(changes || '').trim();
+  if (!trimmed) return;
+  if (/^ללא שינוי מהותי\.?$/.test(trimmed)) return;
+  if (/^כרטיס ראשון\.?$/.test(trimmed)) return;
+
+  var cell = sheet.getRange(row, CC_CHANGELOG);
+  var existing = String(cell.getValue()).trim();
+  var entry = '── ' + formatDate_(new Date()) + ' ──\n' + trimmed;
+  var combined = existing ? entry + '\n\n' + existing : entry;
+
+  if (combined.length > MAX_CHANGELOG_CHARS) {
+    combined = combined.substring(0, MAX_CHANGELOG_CHARS) + '\n\n… (רשומות ישנות נחתכו)';
+  }
+
+  cell.setValue(combined).setWrap(true);
 }
