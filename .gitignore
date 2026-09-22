@@ -8,3 +8,7 @@ node_modules
 backups/*.json
 *.log
 supabase/.temp/*
+
+# clasp OAuth credentials - never commit
+.clasprc.json
+**/.clasprc.json

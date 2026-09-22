@@ -76,3 +76,87 @@
 ב־Apps Script ← **Triggers ← Add Trigger**:
 פונקציה `extractAllRows`, מקור `Time-driven`, למשל כל יום בשעה קבועה.
 שימו לב ש־`extractAllRows` מציג חלונית סיכום בסוף — בהרצת טריגר היא פשוט לא מוצגת.
+
+---
+
+# תחזוקה דרך clasp (במקום הדבקה ידנית)
+
+`clasp` הוא ה-CLI הרשמי של גוגל ל-Apps Script. אחרי הקמה חד-פעמית אפשר לערוך את
+`Code.gs` כאן בריפו ולדחוף לגיליון בפקודה אחת — בלי העתק-הדבק.
+
+## הקמה חד-פעמית
+
+### 1. להדליק את ה-API
+
+להיכנס ל־https://script.google.com/home/usersettings (עם החשבון שבעלים של הגיליון)
+ולהדליק **Google Apps Script API**. בלי זה clasp מקבל 403.
+
+### 2. להתקין clasp
+
+```bash
+npm install -g @google/clasp
+clasp --version          # צריך 3.x
+```
+
+דורש Node 18 ומעלה.
+
+### 3. להתחבר
+
+```bash
+clasp login              # נפתח דפדפן, בוחרים את החשבון ומאשרים
+clasp show-authorized-user
+```
+
+ההרשאה נשמרת ב־`~/.clasprc.json` ושורדת בין סשנים. הקובץ הזה הוא סוד —
+הוא כבר ב־`.gitignore`, לא להעתיק אותו לריפו ולא לשלוח אותו לאף אחד.
+
+### 4. לקשר את הפרויקט
+
+מריצים **מתוך `scripts/whatsapp-sheets/`**:
+
+```bash
+cd scripts/whatsapp-sheets
+```
+
+**אם עדיין לא הדבקתם את הקוד ב-Apps Script** — יוצרים פרויקט מקושר לגיליון:
+
+```bash
+clasp create --title "חילוץ הסטוריית ווצאפ" \
+  --parentId 19pV44x9BU-fUVUJr13_poMCestdicupFx5jfLaON3Lg
+```
+
+**אם כבר הדבקתם** — לוקחים את ה-Script ID מ-Apps Script ←
+`Project Settings` ← `Script ID`, ומריצים:
+
+```bash
+clasp clone <SCRIPT_ID>
+git checkout Code.gs appsscript.json   # מחזירים את הגרסה שבריפו
+```
+
+שתי הדרכים יוצרות `.clasp.json` עם ה-Script ID. הקובץ הזה אינו סוד וכדאי לקמט אותו.
+
+### 5. לדחוף
+
+```bash
+clasp show-file-status   # מראה מה יידחף
+clasp push
+clasp open-script        # פותח את ה-IDE לבדיקה
+```
+
+## שגרת עבודה
+
+```bash
+clasp pull    # לפני עריכה, אם נגעתם בקוד דרך הדפדפן
+# ... עורכים את Code.gs ...
+clasp push    # דוחפים לגיליון
+```
+
+**`clasp push` דורס את הגרסה המרוחקת.** אם ערכתם ב-IDE של Apps Script ולא עשיתם
+`pull` — העריכה הזו תימחק. יש היסטוריית גרסאות ב-Apps Script אם צריך לשחזר.
+
+`.claspignore` בתיקייה מגביל את הדחיפה ל־`Code.gs` ו־`appsscript.json` בלבד,
+כך ש-`README.md` לא נדחף לפרויקט.
+
+## ביטול הגישה
+
+`myaccount.google.com/permissions` ← clasp ← Remove access.
