@@ -71,6 +71,10 @@ function onOpen() {
     .addItem('משיכת היסטוריה — השורה הנוכחית', 'extractCurrentRow')
     .addItem('משיכת היסטוריה — כל השורות', 'extractAllRows')
     .addSeparator()
+    .addItem('הגדרת מפתח OpenAI', 'setupAiKey')
+    .addItem('סיכום AI לאנשי קשר', 'summarizeContacts')
+    .addItem('סיכום AI — רענון מלא', 'summarizeContactsForce')
+    .addSeparator()
     .addItem('אתחול מבנה הגיליון', 'initSheet')
     .addToUi();
 }
@@ -457,6 +461,7 @@ function runExtraction_(rowNumbers) {
   var ok = 0;
   var failed = 0;
   var skipped = 0;
+  var contactsAdded = 0;
 
   for (var i = 0; i < rowNumbers.length; i++) {
     var row = rowNumbers[i];
@@ -487,10 +492,18 @@ function runExtraction_(rowNumbers) {
       var messages = fetchChatHistory_(cfg, target.chatId, cfg.count);
       var label = name || target.chatId;
       var chatSheet = writeChatSheet_(label, target, messages);
+      var synced = syncContactsFromChat_(label, target, messages);
+      contactsAdded += synced.added;
 
       setHistoryLink_(sheet, row, chatSheet, messages.length);
-      sheet.getRange(row, COL_STATUS)
-        .setValue(messages.length ? target.kindLabel + ' · ' + messages.length + ' הודעות' : target.kindLabel + ' · אין הודעות');
+
+      var status = messages.length
+        ? target.kindLabel + ' · ' + messages.length + ' הודעות'
+        : target.kindLabel + ' · אין הודעות';
+      if (synced.added || synced.updated) {
+        status += ' · אנשי קשר: ' + synced.added + ' חדשים, ' + synced.updated + ' עודכנו';
+      }
+      sheet.getRange(row, COL_STATUS).setValue(status);
       sheet.getRange(row, COL_UPDATED).setValue(new Date());
       logLine_('OK', label, target.chatId, messages.length + ' הודעות');
       ok++;
@@ -505,7 +518,13 @@ function runExtraction_(rowNumbers) {
     if (i < rowNumbers.length - 1) Utilities.sleep(REQUEST_PAUSE_MS);
   }
 
-  alert_('הסתיים.\nהצליחו: ' + ok + '\nנכשלו: ' + failed + '\nדולגו (שורות ריקות): ' + skipped);
+  var summary = 'הסתיים.\nהצליחו: ' + ok + '\nנכשלו: ' + failed +
+    '\nדולגו (שורות ריקות): ' + skipped;
+  if (contactsAdded) {
+    summary += '\n\nנוספו ' + contactsAdded + ' אנשי קשר חדשים ללשונית "' + CONTACTS_SHEET + '".' +
+      '\nלסיכום AI: ווטסאפ ← סיכום AI לאנשי קשר.';
+  }
+  alert_(summary);
 }
 
 function resolveTarget_(cfg, input) {
