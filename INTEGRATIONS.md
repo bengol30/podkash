@@ -116,3 +116,15 @@ Recommended providers: Neon, Supabase Postgres, or Vercel Postgres.
 `https://podkash.vercel.app/api/podcast/spotify/rss`
 
 או הדומיין שמוגדר ב־`PODCAST_PUBLIC_BASE_URL`.
+
+## חילוץ היסטוריית ווטסאפ לגוגל שיטס (Green API)
+
+סקריפט Apps Script עצמאי (לא חלק מאפליקציית Next.js) שמחלץ את 100 ההודעות האחרונות
+מאיש קשר או מקבוצה בווטסאפ אל גיליון גוגל, דרך Green API.
+
+- קוד והוראות התקנה: `scripts/whatsapp-sheets/` (`Code.gs`, `appsscript.json`, `README.md`).
+- גיליון: "חילוץ הסטוריית ווצאפ".
+- איש קשר נמשך לפי מספר הטלפון (`<מספר>@c.us`), קבוצה נמשכת לפי שם →
+  הסקריפט מוצא את ה-id שלה ורושם אותו בגיליון (`<id>@g.us`).
+- מפתחות Green API נשמרים ב-DocumentProperties של הגיליון, לא בקוד ולא בתאים.
+- מגבלה ידועה: `getChatHistory` מחזיר רק הודעות שנצברו במאגר Green API מאז חיבור המופע.
