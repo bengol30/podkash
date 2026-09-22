@@ -10,6 +10,15 @@ var PROP_OPENAI_KEY = 'OPENAI_API_KEY';
 var PROP_OPENAI_MODEL = 'OPENAI_MODEL';
 var DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 
+// תעריפים לכל מיליון טוקנים. ניתנים לשינוי כי המחירים של OpenAI משתנים,
+// וברירת המחדל היא של gpt-5.1 נכון להגדרה.
+var PROP_PRICE_IN = 'OPENAI_PRICE_IN';
+var PROP_PRICE_OUT = 'OPENAI_PRICE_OUT';
+var PROP_COST_CAP = 'OPENAI_COST_CAP';
+var DEFAULT_PRICE_IN = 1.25;
+var DEFAULT_PRICE_OUT = 10;
+var DEFAULT_COST_CAP = 1.0;
+
 var MAX_CONTACTS_PER_RUN = 25;
 var MAX_OWN_MESSAGES = 80;
 var MAX_MENTIONS = 25;
@@ -17,6 +26,12 @@ var MAX_EVIDENCE_CHARS = 12000;
 var TIME_BUDGET_MS = 270000; // 4.5 דקות מתוך 6 של Apps Script
 
 var CHAT_DATA_FIRST_ROW = 7;
+
+// תקרות על האינדקס. הארכיונים צוברים לנצח, אז בלי תקרה הזיכרון וזמן
+// הריצה גדלים בלי גבול. עובדות ישנות לא הולכות לאיבוד: הן חיות בכרטיס,
+// שממוזג מהסיכום הקודם ולא נבנה מאפס.
+var MAX_EVIDENCE_ROWS_PER_CHAT = 3000;
+var MAX_EVIDENCE_ROWS_TOTAL = 30000;
 
 var CARD_DELIM = '===כרטיס===';
 var CHANGES_DELIM = '===שינויים===';
@@ -55,7 +70,38 @@ function setupAiKey() {
   props.setProperty(PROP_OPENAI_KEY, key);
   props.setProperty(PROP_OPENAI_MODEL, model);
 
-  ui.alert('נשמר. המודל: ' + model);
+  var capRes = ui.prompt(
+    'תקרת עלות להרצה',
+    'מה התקרה בדולרים להרצת סיכומים אחת? ההרצה נעצרת כשמגיעים אליה.\n' +
+      '(ריק = ' + DEFAULT_COST_CAP + ')',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (capRes.getSelectedButton() === ui.Button.OK) {
+    var cap = parseFloat(capRes.getResponseText().trim());
+    if (cap > 0) props.setProperty(PROP_COST_CAP, String(cap));
+  }
+
+  var priceRes = ui.prompt(
+    'תעריפים',
+    'מחיר למיליון טוקנים, בפורמט קלט,פלט — למשל 1.25,10\n' +
+      'משמש רק לחישוב העלות שמוצגת לכם. ריק = ' +
+      DEFAULT_PRICE_IN + ',' + DEFAULT_PRICE_OUT,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (priceRes.getSelectedButton() === ui.Button.OK) {
+    var parts = priceRes.getResponseText().split(',');
+    var pin = parseFloat(String(parts[0]).trim());
+    var pout = parseFloat(String(parts[1]).trim());
+    if (pin >= 0) props.setProperty(PROP_PRICE_IN, String(pin));
+    if (pout >= 0) props.setProperty(PROP_PRICE_OUT, String(pout));
+  }
+
+  var pricing = getPricing_();
+  ui.alert(
+    'נשמר.\n\nמודל: ' + model +
+      '\nתקרה להרצה: $' + pricing.cap +
+      '\nתעריף: $' + pricing.in + ' קלט, $' + pricing.out + ' פלט למיליון טוקנים'
+  );
 }
 
 /* =========================== נקודות כניסה =========================== */
@@ -128,20 +174,32 @@ function runSummaries_(force) {
   }
 
   var evidence = buildEvidenceIndex_();
+  var pricing = getPricing_();
+
+  if (!confirmSpend_(pending, evidence, pricing)) return;
 
   var done = 0;
   var failed = 0;
   var stoppedEarly = false;
+  var spentReason = '';
+  var spent = 0;
 
   for (var p = 0; p < pending.length; p++) {
     if (done >= MAX_CONTACTS_PER_RUN || Date.now() - started > TIME_BUDGET_MS) {
       stoppedEarly = true;
+      spentReason = 'מגבלת זמן או מכסת אנשי קשר להרצה';
+      break;
+    }
+    if (spent >= pricing.cap) {
+      stoppedEarly = true;
+      spentReason = 'הגעתם לתקרת העלות (' + money_(pricing.cap) + ')';
       break;
     }
 
     var contact = pending[p];
     try {
       var result = summarizeOneContact_(contact, evidence);
+      spent += costOf_(result.usage, pricing);
       sheet.getRange(contact.row, CC_SUMMARY).setValue(result.card).setWrap(true);
       sheet.getRange(contact.row, CC_SUMMARY_AT).setValue(new Date());
       if (contact.previous) prependChangelog_(sheet, contact.row, result.changes);
@@ -154,12 +212,13 @@ function runSummaries_(force) {
   }
 
   var remaining = pending.length - done - failed;
-  var message = 'סוכמו: ' + done + '\nנכשלו: ' + failed;
+  var message = 'סוכמו: ' + done + '\nנכשלו: ' + failed +
+    '\nעלות בפועל: ' + money_(spent);
   if (remaining > 0) {
     message += '\nנשארו: ' + remaining + '\n\nהריצו שוב כדי להמשיך מהמקום שנעצר.';
   }
-  if (stoppedEarly) {
-    message += '\n(נעצר כדי לא לחרוג ממגבלת זמן הריצה של Apps Script.)';
+  if (stoppedEarly && spentReason) {
+    message += '\n\nנעצר: ' + spentReason + '.';
   }
   alert_(message);
 }
@@ -174,6 +233,7 @@ function buildEvidenceIndex_() {
   var sheets = SpreadsheetApp.getActive().getSheets();
   var byPhone = {};
   var all = [];
+  var truncated = false;
 
   for (var s = 0; s < sheets.length; s++) {
     var sheet = sheets[s];
@@ -183,25 +243,37 @@ function buildEvidenceIndex_() {
     var lastRow = sheet.getLastRow();
     if (lastRow < CHAT_DATA_FIRST_ROW) continue;
 
+    // רק ההודעות האחרונות בכל שיחה. הן ממוינות כרונולוגית, אז הסוף
+    // הוא העדכני.
+    var available = lastRow - CHAT_DATA_FIRST_ROW + 1;
+    var take = Math.min(available, MAX_EVIDENCE_ROWS_PER_CHAT);
+    if (take < available) truncated = true;
+
+    var startRow = lastRow - take + 1;
     var label = parseChatSheetName_(name).label;
-    var values = sheet.getRange(
-      CHAT_DATA_FIRST_ROW,
-      1,
-      lastRow - CHAT_DATA_FIRST_ROW + 1,
-      CHAT_HEADERS.length
-    ).getValues();
+
+    var values = sheet.getRange(startRow, 1, take, CHAT_HEADERS.length).getValues();
 
     for (var i = 0; i < values.length; i++) {
+      if (all.length >= MAX_EVIDENCE_ROWS_TOTAL) {
+        truncated = true;
+        break;
+      }
+
       var row = values[i];
       var text = String(row[6] || '').trim();
       if (!text) continue;
 
+      // הנרמול נעשה כאן, פעם אחת לכל הודעה. קודם הוא רץ בתוך הלולאה
+      // הפנימית של סריקת האזכורים — כלומר מחדש לכל איש קשר, מיליוני
+      // הרצות רג׳קס על אותם טקסטים.
       var entry = {
         label: label,
         date: row[1] instanceof Date ? formatDate_(row[1]) : String(row[1] || ''),
         sender: String(row[3] || ''),
         phone: String(row[4] || '').replace(/\D/g, ''),
-        text: text
+        text: text,
+        norm: normalizeText_(text)
       };
 
       all.push(entry);
@@ -212,7 +284,40 @@ function buildEvidenceIndex_() {
     }
   }
 
-  return { byPhone: byPhone, all: all };
+  return { byPhone: byPhone, all: all, truncated: truncated };
+}
+
+/**
+ * התאמת אזכור מודעת לתחיליות עבריות.
+ *
+ * תת-מחרוזת פשוטה תופסת רעש: "דן" נמצא בתוך "מדן", "עדן" ו"דני".
+ * לכן נדרש גבול מילה, עם אפשרות לאות תחילית אחת (ו/ה/ב/ל/כ/מ/ש) —
+ * כך "לדני" נחשב אזכור של דני, וזה נכון, אבל "עדן" אינו אזכור של דן.
+ */
+function mentionsName_(normText, needle) {
+  var WORD = /[\u0590-\u05FF0-9A-Za-z]/;
+
+  // שם בן שתי אותיות קצר מדי בשביל תחיליות: "מדן" ו"ודן" הן לרוב מילים
+  // אחרות ולא אזכור של דן. משלוש אותיות ומעלה התחילית כבר אמינה.
+  var allowPrefix = needle.length >= 3;
+  var at = normText.indexOf(needle);
+
+  while (at !== -1) {
+    var before = at > 0 ? normText.charAt(at - 1) : '';
+    var afterAt = at + needle.length;
+    var after = afterAt < normText.length ? normText.charAt(afterAt) : '';
+
+    var startsWord = !before || !WORD.test(before);
+    if (!startsWord && allowPrefix && 'והבלכמש'.indexOf(before) !== -1) {
+      // אות תחילית נחשבת רק כשהיא עצמה פותחת מילה.
+      startsWord = at === 1 || !WORD.test(normText.charAt(at - 2));
+    }
+
+    if (startsWord && (!after || !WORD.test(after))) return true;
+    at = normText.indexOf(needle, at + 1);
+  }
+
+  return false;
 }
 
 function gatherEvidenceFor_(contact, evidence) {
@@ -235,7 +340,7 @@ function gatherEvidenceFor_(contact, evidence) {
     for (var i = 0; i < evidence.all.length && mentions.length < MAX_MENTIONS; i++) {
       var entry = evidence.all[i];
       if (entry.phone === contact.key) continue; // זה הוא, לא עליו
-      if (normalizeText_(entry.text).indexOf(needle) === -1) continue;
+      if (!mentionsName_(entry.norm, needle)) continue;
       mentions.push(entry);
     }
   }
@@ -289,7 +394,9 @@ function summarizeOneContact_(contact, evidence) {
   if (!gathered.own.length && !gathered.mentions.length) {
     return {
       card: 'אין מספיק חומר לסיכום — לא נמצאו הודעות של איש הקשר הזה ולא אזכורים שלו.',
-      changes: ''
+      changes: '',
+      usage: null,
+      inputChars: 0
     };
   }
 
@@ -349,7 +456,37 @@ function summarizeOneContact_(contact, evidence) {
       'פריט שהיה "פתוח מולו" ונסגר — הוצא אותו מהכרטיס ורשום אותו כ-[הושלם].';
   }
 
-  return splitCardAndChanges_(callOpenAi_(system, user));
+  var answer = callOpenAi_(system, user);
+  var parts = splitCardAndChanges_(answer.content);
+  parts.usage = answer.usage;
+  parts.inputChars = user.length + system.length;
+  return parts;
+}
+
+function getPricing_() {
+  var props = PropertiesService.getDocumentProperties();
+
+  function num(key, fallback) {
+    var value = parseFloat(props.getProperty(key));
+    return value >= 0 ? value : fallback;
+  }
+
+  return {
+    in: num(PROP_PRICE_IN, DEFAULT_PRICE_IN),
+    out: num(PROP_PRICE_OUT, DEFAULT_PRICE_OUT),
+    cap: num(PROP_COST_CAP, DEFAULT_COST_CAP)
+  };
+}
+
+function costOf_(usage, pricing) {
+  if (!usage) return 0;
+  var input = Number(usage.prompt_tokens || 0);
+  var output = Number(usage.completion_tokens || 0);
+  return (input / 1000000) * pricing.in + (output / 1000000) * pricing.out;
+}
+
+function money_(value) {
+  return '$' + (Math.round(value * 100) / 100).toFixed(2);
 }
 
 function getAiConfig_() {
@@ -411,13 +548,14 @@ function callOpenAi_(system, user) {
     throw new Error('OpenAI לא החזיר תוכן.');
   }
 
+  var usage = data.usage || null;
   var content = String(data.choices[0].message.content || '').trim();
   if (!content) {
     // קורה כשמודל חשיבה מכלה את התקציב על חשיבה ולא נשאר לו לתשובה.
     throw new Error('המודל החזיר תשובה ריקה. נסו מודל אחר או העלו את תקציב הטוקנים.');
   }
 
-  return content;
+  return { content: content, usage: usage };
 }
 
 function postToOpenAi_(cfg, payload) {
@@ -472,4 +610,47 @@ function prependChangelog_(sheet, row, changes) {
   }
 
   cell.setValue(combined).setWrap(true);
+}
+
+
+/* =========================== אישור לפני הוצאה =========================== */
+
+/**
+ * שום דבר לא נשלח ל-OpenAI לפני שהמשתמש רואה כמה זה צפוי לעלות.
+ *
+ * ההערכה נבנית מדגימה של הראיות שבאמת ייבנו, ולא ממספר קבוע — ואז
+ * העלות בפועל נמדדת מדיווח השימוש של OpenAI, שהוא מדויק.
+ */
+function confirmSpend_(pending, evidence, pricing) {
+  var willRun = Math.min(pending.length, MAX_CONTACTS_PER_RUN);
+  var sampleSize = Math.min(5, pending.length);
+  var chars = 0;
+
+  for (var i = 0; i < sampleSize; i++) {
+    var gathered = gatherEvidenceFor_(pending[i], evidence);
+    chars += buildEvidenceText_(pending[i], gathered).length;
+    if (pending[i].previous) chars += pending[i].previous.length;
+  }
+
+  // עברית יקרה בטוקנים: בערך טוקן לכל שני תווים.
+  var avgInputTokens = sampleSize ? (chars / sampleSize) / 2 : 0;
+  var estimate =
+    willRun * ((avgInputTokens / 1000000) * pricing.in + (700 / 1000000) * pricing.out);
+
+  var text =
+    'עומדים לסכם ' + willRun + ' אנשי קשר' +
+    (pending.length > willRun ? ' (מתוך ' + pending.length + ' שממתינים)' : '') + '.\n\n' +
+    'הערכת עלות: ' + money_(estimate) + '\n' +
+    'תקרה להרצה: ' + money_(pricing.cap) + ' — ההרצה נעצרת בה\n\n' +
+    'העלות בפועל תימדד מדיווח השימוש של OpenAI ותוצג בסוף.\n\n' +
+    'להמשיך?';
+
+  try {
+    return SpreadsheetApp.getUi().alert('אישור עלות', text, SpreadsheetApp.getUi().ButtonSet.YES_NO) ===
+      SpreadsheetApp.getUi().Button.YES;
+  } catch (err) {
+    // טריגר מתוזמן בלי ממשק: התקרה לבדה שומרת על התקציב.
+    Logger.log('confirmSpend_ ללא ממשק, ממשיכים עם תקרה של ' + pricing.cap);
+    return true;
+  }
 }

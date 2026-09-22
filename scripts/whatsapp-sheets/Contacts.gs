@@ -162,70 +162,78 @@ function syncContactsFromChat_(label, target, rows) {
   if (!contacts.length) return { added: 0, updated: 0 };
 
   var sheet = ensureContactsSheet_();
-  var index = buildContactsIndex_(sheet);
+
+  // כל הטבלה נקראת פעם אחת, משתנה בזיכרון, ונכתבת בחזרה פעם אחת.
+  // הגרסה הקודמת כתבה תא-תא: כשמונה הלוך-חזור לשרת לכל איש קשר בכל
+  // שיחה, כלומר 1,600 קריאות לקבוצה עם 200 משתתפים — מספיק כדי לחרוג
+  // ממגבלת הזמן של Apps Script על קבוצה אחת גדולה.
+  //
+  // נקראות גם עמודות הציון, כך שמה שאיננו הבעלים שלו נכתב בחזרה כפי
+  // שהיה: הסיכום, יומן השינויים וההערות הידניות.
+  var width = CONTACTS_HEADERS.length + 2;
+  var last = sheet.getLastRow();
+  var table = last >= 2 ? sheet.getRange(2, 1, last - 1, width).getValues() : [];
+
+  var index = {};
+  for (var i = 0; i < table.length; i++) {
+    var existingKey = String(table[i][CC_KEY - 1]).replace(/\D/g, '');
+    if (existingKey && index[existingKey] === undefined) index[existingKey] = i;
+  }
 
   var added = 0;
   var updated = 0;
 
-  for (var i = 0; i < contacts.length; i++) {
-    var c = contacts[i];
-    var row = index[c.key];
+  for (var c = 0; c < contacts.length; c++) {
+    var contact = contacts[c];
+    var at = index[contact.key];
 
-    if (!row) {
-      row = Math.max(sheet.getLastRow() + 1, 2);
-      sheet.getRange(row, CC_KEY).setValue(c.key);
-      sheet.getRange(row, CC_PHONE).setValue('+' + c.key);
-      index[c.key] = row;
+    if (at === undefined) {
+      var blank = [];
+      for (var b = 0; b < width; b++) blank.push('');
+      blank[CC_KEY - 1] = contact.key;
+      blank[CC_PHONE - 1] = '+' + contact.key;
+
+      table.push(blank);
+      at = table.length - 1;
+      index[contact.key] = at;
       added++;
     } else {
       updated++;
     }
 
-    mergeContactRow_(sheet, row, c, label);
+    mergeContactValues_(table[at], contact, label);
+  }
+
+  if (table.length) {
+    sheet.getRange(2, 1, table.length, width).setValues(table);
   }
 
   SpreadsheetApp.flush();
   return { added: added, updated: updated };
 }
 
-function buildContactsIndex_(sheet) {
-  var index = {};
-  var last = sheet.getLastRow();
-  if (last < 2) return index;
-
-  var keys = sheet.getRange(2, CC_KEY, last - 1, 1).getValues();
-  for (var i = 0; i < keys.length; i++) {
-    var key = String(keys[i][0]).replace(/\D/g, '');
-    if (key && !index[key]) index[key] = i + 2;
-  }
-  return index;
-}
-
-function mergeContactRow_(sheet, row, contact, label) {
+/** אותם כללי מיזוג כמו קודם, על מערך בזיכרון במקום על תאים. */
+function mergeContactValues_(row, contact, label) {
   // שם: נכתב רק אם ריק. שם אחר נצבר לשמות נוספים.
-  var nameCell = sheet.getRange(row, CC_NAME);
-  var currentName = String(nameCell.getValue()).trim();
-
+  var currentName = String(row[CC_NAME - 1]).trim();
   if (contact.name) {
     if (!currentName) {
-      nameCell.setValue(contact.name);
+      row[CC_NAME - 1] = contact.name;
     } else if (normalizeText_(currentName) !== normalizeText_(contact.name)) {
-      addAlias_(sheet, row, contact.name);
+      row[CC_ALIASES - 1] = addAliasTo_(String(row[CC_ALIASES - 1]), contact.name);
     }
   }
 
   // סוג: מי שנראה גם בשיחה פרטית וגם בקבוצה מסומן כשניהם.
-  var kindCell = sheet.getRange(row, CC_KIND);
-  var currentKind = String(kindCell.getValue()).trim();
+  var currentKind = String(row[CC_KIND - 1]).trim();
   if (!currentKind) {
-    kindCell.setValue(contact.kind);
+    row[CC_KIND - 1] = contact.kind;
   } else if (currentKind !== contact.kind && currentKind !== KIND_BOTH) {
-    kindCell.setValue(KIND_BOTH);
+    row[CC_KIND - 1] = KIND_BOTH;
   }
 
   // מקורות: מעדכנים את הערך של השיחה הזו, לא מוסיפים עוד אחד.
-  var sourcesCell = sheet.getRange(row, CC_SOURCES);
-  var sources = parseSources_(String(sourcesCell.getValue()));
+  var sources = parseSources_(String(row[CC_SOURCES - 1]));
   var matched = false;
 
   for (var i = 0; i < sources.length; i++) {
@@ -237,41 +245,37 @@ function mergeContactRow_(sheet, row, contact, label) {
   }
   if (!matched) sources.push({ label: label, count: contact.count });
 
-  sourcesCell.setValue(serializeSources_(sources));
+  row[CC_SOURCES - 1] = serializeSources_(sources);
 
   var total = 0;
   for (var j = 0; j < sources.length; j++) total += sources[j].count;
-  sheet.getRange(row, CC_TOTAL).setValue(total);
+  row[CC_TOTAL - 1] = total;
 
   // טווח תאריכים: מרחיבים, אף פעם לא מצמצמים.
   if (contact.first) {
-    var firstCell = sheet.getRange(row, CC_FIRST);
-    var existingFirst = firstCell.getValue();
+    var existingFirst = row[CC_FIRST - 1];
     if (!(existingFirst instanceof Date) || contact.first < existingFirst) {
-      firstCell.setValue(contact.first);
+      row[CC_FIRST - 1] = contact.first;
     }
   }
   if (contact.last) {
-    var lastCell = sheet.getRange(row, CC_LAST);
-    var existingLast = lastCell.getValue();
+    var existingLast = row[CC_LAST - 1];
     if (!(existingLast instanceof Date) || contact.last > existingLast) {
-      lastCell.setValue(contact.last);
+      row[CC_LAST - 1] = contact.last;
     }
   }
 
-  // סיכום AI, הערות ידניות ויומן השינויים לא נגענו בהם בכוונה.
+  // סיכום AI, יומן שינויים והערות ידניות לא נגענו בהם בכוונה.
 }
 
-function addAlias_(sheet, row, name) {
-  var cell = sheet.getRange(row, CC_ALIASES);
-  var current = String(cell.getValue());
+function addAliasTo_(current, name) {
   var parts = current ? current.split(' | ') : [];
 
   for (var i = 0; i < parts.length; i++) {
-    if (normalizeText_(parts[i]) === normalizeText_(name)) return;
+    if (normalizeText_(parts[i]) === normalizeText_(name)) return current;
   }
   parts.push(name);
-  cell.setValue(parts.join(' | '));
+  return parts.join(' | ');
 }
 
 function parseSources_(value) {

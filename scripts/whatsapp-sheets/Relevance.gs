@@ -197,8 +197,19 @@ function scoreOf_(st, maxMessages, kind) {
 
   return {
     score: Math.round(score * 10) / 10,
-    detail: detailOf_(st, activeDays, daysSince, trend)
+    detail: detailOf_(st, activeDays, daysSince, trend),
+    trend: trendOf_(st, daysSince, trend)
   };
+}
+
+/** תווית המגמה, כדי שקוראים לא יצטרכו לחפש מילה בתוך הפירוט. */
+function trendOf_(st, daysSince, trend) {
+  if (!st || (!st.messages && !st.prevMessages)) return '';
+  if (daysSince > RELEVANCE_WINDOW_DAYS / 2) return 'דועך';
+  if (!st.prevMessages && st.messages) return 'חדש';
+  if (trend > 60) return 'עולה';
+  if (trend < 40) return 'דועך';
+  return 'יציב';
 }
 
 function detailOf_(st, activeDays, daysSince, trend) {
@@ -218,17 +229,7 @@ function detailOf_(st, activeDays, daysSince, trend) {
 
   // יחס בין החלונות לבדו מטעה כשהפעילות עצמה ישנה: ארבעים הודעות
   // שכולן מלפני 25 יום אינן "חדש", הן גוססות. לכן הטריות גוברת.
-  if (daysSince > RELEVANCE_WINDOW_DAYS / 2) {
-    parts.push('דועך');
-  } else if (!st.prevMessages && st.messages) {
-    parts.push('חדש');
-  } else if (trend > 60) {
-    parts.push('עולה');
-  } else if (trend < 40) {
-    parts.push('דועך');
-  } else {
-    parts.push('יציב');
-  }
+  parts.push(trendOf_(st, daysSince, trend));
 
   return parts.join(' · ');
 }

@@ -313,7 +313,7 @@ function writeAllChatsSheet_(built, roster, journal) {
       st ? st.incoming : 0,
       st ? st.outgoing : 0,
       st && st.lastAt ? st.lastAt : '',
-      trendLabel_(st),
+      scored.trend,
       scored.detail
     ]);
   }
@@ -362,15 +362,6 @@ function mainSheetPhones_() {
   }
 
   return phones;
-}
-
-function trendLabel_(st) {
-  if (!st || !st.messages) return '';
-  var detail = scoreOf_(st, 1, 'chat').detail;
-  if (detail.indexOf('עולה') !== -1) return 'עולה';
-  if (detail.indexOf('דועך') !== -1) return 'דועך';
-  if (detail.indexOf('חדש') !== -1) return 'חדש';
-  return 'יציב';
 }
 
 /**

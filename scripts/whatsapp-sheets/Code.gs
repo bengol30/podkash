@@ -46,6 +46,11 @@ var DEFAULT_COUNT = 100;
 var DEFAULT_COUNTRY = '972';
 var REQUEST_PAUSE_MS = 1200;
 
+// Apps Script עוצר הרצה אחרי 6 דקות. בלי תקציב משלנו החילוץ היה מת
+// באמצע בלי סיכום ובלי לדעת איפה נעצר.
+var EXTRACTION_BUDGET_MS = 270000;
+var LOG_MAX_ROWS = 500;
+
 var CHAT_HEADERS = [
   '#',
   'תאריך ושעה',
@@ -293,27 +298,26 @@ function refreshGroups() {
     var cfg = getConfig_();
     var groups = fetchGroups_(cfg);
 
-    var sheet = getOrCreateSheet_(GROUPS_SHEET);
-    sheet.clear();
-    sheet.getRange(1, 1, 1, 3)
-      .setValues([['שם הקבוצה', 'id של קבוצה', 'chatId מלא']])
-      .setFontWeight('bold')
-      .setBackground('#25D366')
-      .setFontColor('#ffffff');
-    sheet.setFrozenRows(1);
-
-    if (groups.length) {
-      var rows = groups.map(function (g) {
-        return [g.name, g.shortId, g.chatId];
-      });
-      sheet.getRange(2, 1, rows.length, 3).setValues(rows);
+    // מיזוג ולא מחיקה: מחיקה הייתה מוחקת גם את עמודות הציון, את תיבות
+    // הסימון ואת הסטטוסים של כפתור ההוספה.
+    var roster = {};
+    for (var i = 0; i < groups.length; i++) {
+      roster[groups[i].chatId] = {
+        chatId: groups[i].chatId,
+        name: groups[i].name,
+        isGroup: true
+      };
     }
-    sheet.setColumnWidth(1, 260);
-    sheet.setColumnWidth(2, 220);
-    sheet.setColumnWidth(3, 240);
-    ensureGroupsButtons_(sheet);
 
-    ui.alert('נמצאו ' + groups.length + ' קבוצות. הרשימה נשמרה בלשונית "' + GROUPS_SHEET + '".');
+    var added = syncGroupsRosterInto_(roster);
+    var sheet = SpreadsheetApp.getActive().getSheetByName(GROUPS_SHEET);
+    var total = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+
+    ui.alert(
+      'נמצאו ' + groups.length + ' קבוצות בווטסאפ.\n' +
+        'נוספו לרשימה: ' + added + '\n' +
+        'סה״כ בלשונית "' + GROUPS_SHEET + '": ' + total
+    );
   } catch (err) {
     ui.alert('שגיאה: ' + err.message);
   }
@@ -502,14 +506,21 @@ function runExtraction_(rowNumbers) {
 
   migrateChatSheetNames_();
 
+  var started = Date.now();
   var sheet = getMainSheet_();
   var groups = null;
   var ok = 0;
+  var remaining = 0;
   var failed = 0;
   var skipped = 0;
   var contactsAdded = 0;
 
   for (var i = 0; i < rowNumbers.length; i++) {
+    if (Date.now() - started > EXTRACTION_BUDGET_MS) {
+      remaining = rowNumbers.length - i;
+      break;
+    }
+
     var row = rowNumbers[i];
     var name = String(sheet.getRange(row, COL_NAME).getValue()).trim();
     var phone = String(sheet.getRange(row, COL_PHONE).getValue()).trim();
@@ -564,8 +575,15 @@ function runExtraction_(rowNumbers) {
     if (i < rowNumbers.length - 1) Utilities.sleep(REQUEST_PAUSE_MS);
   }
 
-  var summary = 'הסתיים.\nהצליחו: ' + ok + '\nנכשלו: ' + failed +
+  var summary = remaining
+    ? 'נעצר לפני מגבלת הזמן של Apps Script.\n'
+    : 'הסתיים.\n';
+  summary += 'הצליחו: ' + ok + '\nנכשלו: ' + failed +
     '\nדולגו (שורות ריקות): ' + skipped;
+  if (remaining) {
+    summary += '\nלא נגענו ב-' + remaining + ' שורות. הריצו שוב כדי להמשיך — ' +
+      'שורות שכבר חולצו פשוט יתעדכנו מחדש.';
+  }
   if (contactsAdded) {
     summary += '\n\nנוספו ' + contactsAdded + ' אנשי קשר חדשים ללשונית "' + CONTACTS_SHEET + '".' +
       '\nלסיכום AI: ווטסאפ ← סיכום AI לאנשי קשר.';
@@ -950,8 +968,17 @@ function parseMessage_(msg) {
   };
 }
 
+/** אזור הזמן של הגיליון, לא קבוע מקודד. */
+function tz_() {
+  try {
+    return SpreadsheetApp.getActive().getSpreadsheetTimeZone() || 'Asia/Jerusalem';
+  } catch (err) {
+    return 'Asia/Jerusalem';
+  }
+}
+
 function formatDate_(date) {
-  return Utilities.formatDate(date, 'Asia/Jerusalem', 'dd/MM/yyyy HH:mm:ss');
+  return Utilities.formatDate(date, tz_(), 'dd/MM/yyyy HH:mm:ss');
 }
 
 function setHistoryLink_(sheet, row, chatSheet, count) {
@@ -974,6 +1001,12 @@ function logLine_(level, label, chatId, details) {
       sheet.setFrozenRows(1);
     }
     sheet.appendRow([formatDate_(new Date()), level, label, chatId, details]);
+
+    // הלוג גדל לנצח אחרת. שומרים את האחרונות ומוחקים את הישנות בבת אחת.
+    var last = sheet.getLastRow();
+    if (last > LOG_MAX_ROWS + 1) {
+      sheet.deleteRows(2, last - LOG_MAX_ROWS - 1);
+    }
   } catch (err) {
     Logger.log('log failed: ' + err.message);
   }
