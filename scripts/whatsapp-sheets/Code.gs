@@ -75,6 +75,8 @@ function onOpen() {
     .addItem('סיכום AI לאנשי קשר', 'summarizeContacts')
     .addItem('סיכום AI — רענון מלא', 'summarizeContactsForce')
     .addSeparator()
+    .addItem('עדכון דירוג רלוונטיות', 'updateRelevanceRanking')
+    .addSeparator()
     .addItem('אתחול מבנה הגיליון', 'initSheet')
     .addToUi();
 }
