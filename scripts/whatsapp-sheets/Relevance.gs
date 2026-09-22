@@ -312,6 +312,16 @@ function rankMainSheet_(stats) {
       var groupId = String(r[COL_GROUP_ID - 1]).replace(/\s+/g, '');
       if (groupId) st = stats.byChatId[groupId.indexOf('@') !== -1 ? groupId : groupId + '@g.us'];
     }
+    if (!st) {
+      // שורת איש קשר: מגיעים לצ׳אט דרך המספר המנורמל.
+      var phone = String(r[COL_PHONE - 1]).trim();
+      if (phone) {
+        var country = PropertiesService.getDocumentProperties().getProperty(PROP_COUNTRY) ||
+          DEFAULT_COUNTRY;
+        var digits = normalizePhone_(phone, country);
+        if (digits) st = stats.byChatId[digits + '@c.us'];
+      }
+    }
     return scoreOf_(st, stats.maxChat, 'chat');
   });
 

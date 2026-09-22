@@ -247,8 +247,34 @@ function initSheet() {
   alert_('מבנה הגיליון עודכן.');
 }
 
+/**
+ * הלשונית הראשית היא זו שבה מזינים יעדים לחילוץ.
+ *
+ * להסתמך על "הלשונית הראשונה" היה שביר: כל לשונית שהסקריפט יוצר, או
+ * גרירה ידנית של טאב, היו מזיזים את המטרה. לכן מזהים לפי הכותרת, ורק
+ * כמוצא אחרון נופלים לראשונה שאינה לשונית שהסקריפט ייצר.
+ */
 function getMainSheet_() {
-  return SpreadsheetApp.getActive().getSheets()[0];
+  var sheets = SpreadsheetApp.getActive().getSheets();
+
+  var generated = {};
+  generated[GROUPS_SHEET] = true;
+  generated[LOG_SHEET] = true;
+  generated[CONTACTS_SHEET] = true;
+  generated[ALL_CHATS_SHEET] = true;
+
+  for (var i = 0; i < sheets.length; i++) {
+    if (String(sheets[i].getRange(1, 1).getValue()).trim() === HEADERS[0]) return sheets[i];
+  }
+
+  for (var j = 0; j < sheets.length; j++) {
+    var name = sheets[j].getName();
+    if (generated[name]) continue;
+    if (name.indexOf(CHAT_SHEET_PREFIX) === 0) continue;
+    return sheets[j];
+  }
+
+  return sheets[0];
 }
 
 function getOrCreateSheet_(name) {

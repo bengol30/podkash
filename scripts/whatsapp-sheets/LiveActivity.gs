@@ -60,11 +60,17 @@ function syncLiveActivity() {
   var built = buildLiveStats_(journal);
   var written = writeAllChatsSheet_(built, roster, journal);
 
+  var adapter = liveStatsAdapter_(built, roster);
+
+  syncGroupsRosterInto_(roster);
   applyLiveScoresToContacts_(built);
+
+  var ranked = [rankGroupsSheet_(adapter), rankMainSheet_(adapter)].join('\n');
 
   alert_(
     'סונכרן מווטסאפ.\n\n' +
       'שיחות: ' + written + '\n' +
+      ranked + '\n' +
       'הודעות ביומן: ' + journal.entries.length + '\n' +
       'היומן כיסה בפועל: ' + journal.coveredDays + ' ימים\n' +
       (journal.coveredDays < days - 1
@@ -339,4 +345,73 @@ function applyLiveScoresToContacts_(built) {
   var n = writeScoresAndSort_(sheet, 2, CONTACTS_HEADERS.length, scoreCol, rows);
   sheet.getRange(2, CC_SUMMARY, n, 1).setWrap(true);
   sheet.getRange(2, CC_CHANGELOG, n, 1).setWrap(true);
+}
+
+
+/* =========================== התאמה למדרגים הקיימים =========================== */
+
+/**
+ * המדרגים של Relevance.gs מצפים למפה לפי שם ולמפה לפי chatId. הנתונים
+ * החיים ממופתחים ב-chatId בלבד, אז מוסיפים מפתוח לפי שם מתוך רשימת
+ * הצ׳אטים — וכך אותן פונקציות מיון משרתות את שני המקורות.
+ */
+function liveStatsAdapter_(built, roster) {
+  var byName = {};
+
+  for (var id in built.chats) {
+    if (!built.chats.hasOwnProperty(id)) continue;
+    var info = roster[id];
+    var name = info && info.name ? info.name.trim() : (built.chats[id].name || '').trim();
+    if (name && !byName[name]) byName[name] = built.chats[id];
+  }
+
+  return {
+    chats: byName,
+    byChatId: built.chats,
+    contacts: built.contacts,
+    maxChat: built.maxChat,
+    maxContact: built.maxContact,
+    chatCount: countKeys_(built.chats)
+  };
+}
+
+/**
+ * מוסיף ללשונית הקבוצות קבוצות שהופיעו בווטסאפ ועדיין אינן שם.
+ * שורות קיימות נשארות — ייתכן שהוזן בהן id ידנית.
+ */
+function syncGroupsRosterInto_(roster) {
+  var sheet = getOrCreateSheet_(GROUPS_SHEET);
+
+  if (sheet.getLastRow() < 1 || String(sheet.getRange(1, 1).getValue()).trim() !== 'שם הקבוצה') {
+    sheet.getRange(1, 1, 1, 3)
+      .setValues([['שם הקבוצה', 'id של קבוצה', 'chatId מלא']])
+      .setFontWeight('bold')
+      .setBackground('#25D366')
+      .setFontColor('#ffffff');
+    sheet.setFrozenRows(1);
+  }
+
+  var known = {};
+  var last = sheet.getLastRow();
+  if (last > 1) {
+    var existing = sheet.getRange(2, 3, last - 1, 1).getValues();
+    for (var i = 0; i < existing.length; i++) {
+      var id = String(existing[i][0]).trim();
+      if (id) known[id] = true;
+    }
+  }
+
+  var additions = [];
+  for (var chatId in roster) {
+    if (!roster.hasOwnProperty(chatId)) continue;
+    if (!roster[chatId].isGroup) continue;
+    if (known[chatId]) continue;
+    additions.push([roster[chatId].name, chatId.replace('@g.us', ''), chatId]);
+  }
+
+  if (additions.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 3).setValues(additions);
+  }
+
+  return additions.length;
 }
